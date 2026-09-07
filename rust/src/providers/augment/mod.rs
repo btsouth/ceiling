@@ -15,7 +15,6 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::process::Command;
-use tokio::time::timeout;
 
 use crate::core::{
     FetchContext, Provider, ProviderError, ProviderFetchResult, ProviderId, ProviderMetadata,
@@ -218,10 +217,14 @@ impl AugmentProvider {
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
-        let output = timeout(Duration::from_secs(15), cmd.output())
+        let output = crate::host::tokio_cli::output_with_timeout(&mut cmd, Duration::from_secs(15))
             .await
-            .map_err(|_| ProviderError::Timeout)?
-            .map_err(|e| ProviderError::Other(format!("Failed to run Augment CLI: {e}")))?;
+            .map_err(|e| match e {
+                crate::host::tokio_cli::Error::TimedOut => ProviderError::Timeout,
+                crate::host::tokio_cli::Error::Io(e) => {
+                    ProviderError::Other(format!("Failed to run Augment CLI: {e}"))
+                }
+            })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -125,8 +125,7 @@ impl VertexAIProvider {
             #[cfg(windows)]
             cmd.creation_flags(CREATE_NO_WINDOW);
 
-            let output = cmd
-                .output()
+            let output = crate::host::tokio_cli::output(&mut cmd)
                 .await
                 .map_err(|e| ProviderError::Other(e.to_string()))?;
 
