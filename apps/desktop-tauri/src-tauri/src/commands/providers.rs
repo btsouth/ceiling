@@ -1811,7 +1811,7 @@ mod widget_snapshot_tests {
         assert_eq!(
             entry.constraining_rate_window().map(|w| w.used_percent),
             Some(56.0),
-            "on-demand spend binds the strip window: {entry:?}"
+            "on-demand spend binds the strip window"
         );
     }
 
