@@ -304,7 +304,9 @@ pub fn same_dir(a: &Path, b: &Path) -> bool {
     dir_key(a) == dir_key(b)
 }
 
-fn dir_key(dir: &Path) -> String {
+/// Canonical key for a config directory. Same identity as [`same_dir`]:
+/// trailing separators stripped, and lowercased on Windows.
+pub(crate) fn dir_key(dir: &Path) -> String {
     let raw = dir.to_string_lossy();
     let trimmed = raw.trim_end_matches(['/', '\\']);
     if cfg!(windows) {

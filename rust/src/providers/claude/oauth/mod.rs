@@ -5,7 +5,8 @@
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use reqwest::header::{HeaderValue, RETRY_AFTER};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -69,7 +70,7 @@ pub struct ClaudeOAuthFetcher {
     config_dir: Option<PathBuf>,
 }
 
-static RATE_LIMIT_BACKOFF_UNTIL: OnceLock<Mutex<Option<Instant>>> = OnceLock::new();
+static RATE_LIMIT_BACKOFF_UNTIL: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 
 impl ClaudeOAuthFetcher {
     const USAGE_URL: &'static str = "https://api.anthropic.com/api/oauth/usage";
@@ -270,7 +271,7 @@ impl ClaudeOAuthFetcher {
             )));
         }
 
-        if let Some(remaining) = Self::rate_limit_backoff_remaining() {
+        if let Some(remaining) = self.rate_limit_backoff_remaining() {
             return Err(Self::rate_limited_error(remaining));
         }
 
@@ -305,7 +306,7 @@ impl ClaudeOAuthFetcher {
             }
 
             if status.as_u16() == 429 {
-                Self::record_rate_limit(retry_after);
+                self.record_rate_limit(retry_after);
                 return Err(Self::rate_limited_error(retry_after));
             }
 
@@ -321,35 +322,49 @@ impl ClaudeOAuthFetcher {
             .await
             .map_err(|e| ProviderError::Parse(format!("Failed to parse OAuth response: {}", e)))?;
 
-        Self::clear_rate_limit();
+        self.clear_rate_limit();
         Ok(usage)
     }
 
-    fn rate_limit_gate() -> &'static Mutex<Option<Instant>> {
-        RATE_LIMIT_BACKOFF_UNTIL.get_or_init(|| Mutex::new(None))
+    /// Seat key for the OAuth 429 gate. Directory seats use the same
+    /// `dir_key` identity as account isolation and post-SBS-1057 pace
+    /// warnings: two `CLAUDE_CONFIG_DIR`s do not share backoff, even when
+    /// they share a login email. Ambient (`None`) resolves to the CLI's
+    /// current config dir so an explicit ambient path is the same seat.
+    fn rate_limit_seat_key(&self) -> String {
+        self.config_dir()
+            .map(Path::to_path_buf)
+            .or_else(crate::core::ambient_claude_config_dir)
+            .map(|dir| crate::core::dir_key(&dir))
+            .unwrap_or_default()
     }
 
-    fn rate_limit_backoff_remaining() -> Option<Duration> {
+    fn rate_limit_gate() -> &'static Mutex<HashMap<String, Instant>> {
+        RATE_LIMIT_BACKOFF_UNTIL.get_or_init(Mutex::default)
+    }
+
+    fn rate_limit_backoff_remaining(&self) -> Option<Duration> {
         let mut guard = Self::rate_limit_gate().lock().ok()?;
-        let until = (*guard)?;
+        let key = self.rate_limit_seat_key();
+        let until = *guard.get(&key)?;
         let now = Instant::now();
         if until <= now {
-            *guard = None;
+            guard.remove(&key);
             None
         } else {
             Some(until.saturating_duration_since(now))
         }
     }
 
-    fn record_rate_limit(duration: Duration) {
+    fn record_rate_limit(&self, duration: Duration) {
         if let Ok(mut guard) = Self::rate_limit_gate().lock() {
-            *guard = Some(Instant::now() + duration);
+            guard.insert(self.rate_limit_seat_key(), Instant::now() + duration);
         }
     }
 
-    fn clear_rate_limit() {
+    fn clear_rate_limit(&self) {
         if let Ok(mut guard) = Self::rate_limit_gate().lock() {
-            *guard = None;
+            guard.remove(&self.rate_limit_seat_key());
         }
     }
 
@@ -461,7 +476,16 @@ mod tests {
     };
     use chrono::{Duration as ChronoDuration, TimeZone, Utc};
     use reqwest::header::HeaderValue;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
+
+    fn rate_limit_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     fn test_credentials() -> ClaudeOAuthCredentials {
         ClaudeOAuthCredentials {
@@ -712,13 +736,92 @@ mod tests {
 
     #[test]
     fn rate_limit_gate_blocks_and_clears() {
-        ClaudeOAuthFetcher::clear_rate_limit();
+        let _lock = rate_limit_test_lock();
+        let fetcher = ClaudeOAuthFetcher::with_config_dir(PathBuf::from(
+            r"C:\Users\person\.claude-rate-limit-gate",
+        ));
+        fetcher.clear_rate_limit();
 
-        ClaudeOAuthFetcher::record_rate_limit(Duration::from_secs(30));
-        assert!(ClaudeOAuthFetcher::rate_limit_backoff_remaining().is_some());
+        fetcher.record_rate_limit(Duration::from_secs(30));
+        assert!(fetcher.rate_limit_backoff_remaining().is_some());
 
-        ClaudeOAuthFetcher::clear_rate_limit();
-        assert!(ClaudeOAuthFetcher::rate_limit_backoff_remaining().is_none());
+        fetcher.clear_rate_limit();
+        assert!(fetcher.rate_limit_backoff_remaining().is_none());
+    }
+
+    /// SBS-1064: one directory seat's 429 must not pause the other. These
+    /// seats can share a login email across orgs — the same isolation class
+    /// as post-SBS-1057 predictive pace — so backoff is keyed by config dir.
+    #[test]
+    fn two_directory_seats_do_not_share_oauth_rate_limit_backoff() {
+        let _lock = rate_limit_test_lock();
+        let personal =
+            ClaudeOAuthFetcher::with_config_dir(PathBuf::from(r"C:\Users\person\.claude-personal"));
+        let work =
+            ClaudeOAuthFetcher::with_config_dir(PathBuf::from(r"C:\Users\person\.claude-work"));
+        personal.clear_rate_limit();
+        work.clear_rate_limit();
+
+        personal.record_rate_limit(Duration::from_secs(30));
+        assert!(
+            personal.rate_limit_backoff_remaining().is_some(),
+            "the rate-limited seat must still honor its own backoff"
+        );
+        assert!(
+            work.rate_limit_backoff_remaining().is_none(),
+            "a 429 on one directory seat must not pause the other"
+        );
+
+        work.record_rate_limit(Duration::from_secs(45));
+        personal.clear_rate_limit();
+        assert!(
+            personal.rate_limit_backoff_remaining().is_none(),
+            "clearing one seat must not clear the other"
+        );
+        assert!(work.rate_limit_backoff_remaining().is_some());
+    }
+
+    #[test]
+    fn rate_limit_seat_key_follows_directory_identity() {
+        let personal =
+            ClaudeOAuthFetcher::with_config_dir(PathBuf::from(r"C:\Users\person\.claude-personal"));
+        let work =
+            ClaudeOAuthFetcher::with_config_dir(PathBuf::from(r"C:\Users\person\.claude-work"));
+        let same_personal = ClaudeOAuthFetcher::with_config_dir(PathBuf::from(
+            r"C:\Users\person\.claude-personal\",
+        ));
+
+        assert_ne!(
+            personal.rate_limit_seat_key(),
+            work.rate_limit_seat_key(),
+            "distinct CLAUDE_CONFIG_DIRs are distinct seats"
+        );
+        assert_eq!(
+            personal.rate_limit_seat_key(),
+            same_personal.rate_limit_seat_key(),
+            "trailing separators must not split one seat"
+        );
+    }
+
+    #[test]
+    fn same_directory_seat_shares_oauth_rate_limit_backoff() {
+        let _lock = rate_limit_test_lock();
+        let first = ClaudeOAuthFetcher::with_config_dir(PathBuf::from(
+            r"C:\Users\person\.claude-same-seat",
+        ));
+        let second = ClaudeOAuthFetcher::with_config_dir(PathBuf::from(
+            r"C:\Users\person\.claude-same-seat\",
+        ));
+        first.clear_rate_limit();
+        second.clear_rate_limit();
+
+        first.record_rate_limit(Duration::from_secs(30));
+        assert!(
+            second.rate_limit_backoff_remaining().is_some(),
+            "two fetchers for the same config dir are one seat"
+        );
+        second.clear_rate_limit();
+        assert!(first.rate_limit_backoff_remaining().is_none());
     }
 
     #[test]
