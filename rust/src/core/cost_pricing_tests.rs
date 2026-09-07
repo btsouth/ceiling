@@ -311,6 +311,36 @@ fn test_normalize_codex_model() {
 }
 
 #[test]
+fn gpt_6_astra_normalizes_variants_and_prices_published_rates() {
+    assert_eq!(
+        CostUsagePricing::normalize_codex_model("gpt-6-astra"),
+        "gpt-6-astra"
+    );
+    assert_eq!(
+        CostUsagePricing::normalize_codex_model("gpt-6-astra-2026-09-04"),
+        "gpt-6-astra"
+    );
+    assert_eq!(
+        CostUsagePricing::normalize_codex_model("gpt-6-astra-codex"),
+        "gpt-6-astra"
+    );
+    assert_eq!(
+        CostUsagePricing::normalize_codex_model("gpt-6"),
+        "gpt-6-astra"
+    );
+
+    // Standard API rates: $10 input / $1 cached input / $50 output per 1M.
+    let full = CostUsagePricing::codex_cost_usd("gpt-6-astra", 1_000_000, 0, 1_000_000);
+    assert_close(full.unwrap(), 60.0);
+    let half_cached = CostUsagePricing::codex_cost_usd("gpt-6-astra", 2_000_000, 1_000_000, 0);
+    assert_close(half_cached.unwrap(), 11.0);
+
+    // Codex does not apply Astra long-context multipliers above 272K.
+    let long_input = CostUsagePricing::codex_cost_usd("gpt-6-astra", 300_000, 0, 0);
+    assert_close(long_input.unwrap(), 3.0);
+}
+
+#[test]
 fn codex_variant_pricing_entries_are_not_collapsed_to_the_base_model() {
     for model in ["gpt-5.1-codex-max", "gpt-5.1-codex-mini"] {
         assert_eq!(CostUsagePricing::normalize_codex_model(model), model);
