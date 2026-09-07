@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+#[cfg(windows)]
 use std::time::Duration;
 
 use chrono::Utc;

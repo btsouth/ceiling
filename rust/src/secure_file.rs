@@ -821,12 +821,12 @@ fn is_sharing_or_access_failure(win32_code: u32) -> bool {
 }
 
 fn keep_replacement_temp(result: &io::Result<()>, dest: &Path) -> bool {
-    let Err(error) = result else {
+    let Err(_error) = result else {
         return false;
     };
     #[cfg(windows)]
     {
-        if let Some(raw) = error.raw_os_error() {
+        if let Some(raw) = _error.raw_os_error() {
             return keep_temp_after_replace_failure(raw as u32, dest.exists());
         }
         !dest.exists()
