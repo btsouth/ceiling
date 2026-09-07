@@ -949,6 +949,64 @@ fn the_taskbar_strip_does_not_flicker_between_tied_accounts() {
     );
 }
 
+fn cursor_account_snapshot(
+    account_id: &str,
+    plan: f64,
+    auto: f64,
+    api: Option<f64>,
+) -> ProviderUsageSnapshot {
+    let metadata = instantiate_provider(ProviderId::Cursor).metadata().clone();
+    let mut usage = codexbar::core::UsageSnapshot::new(codexbar::core::RateWindow::new(plan))
+        .with_secondary(codexbar::core::RateWindow::new(auto));
+    if let Some(api) = api {
+        usage =
+            usage.with_extra_rate_window("cursor-api", "API", codexbar::core::RateWindow::new(api));
+    }
+    let result = ProviderFetchResult {
+        usage,
+        cost: None,
+        wayfinder_usage: None,
+        source_label: "oauth".to_string(),
+    };
+    let mut snapshot =
+        ProviderUsageSnapshot::from_fetch_result(ProviderId::Cursor, &metadata, &result);
+    snapshot.account_id = Some(account_id.to_string());
+    snapshot
+}
+
+/// SBS-1076: picking by Plan used% chose the seat whose blend was hotter even
+/// when Auto still had room. The strip ranks Auto/API, so the seat picker must.
+#[test]
+fn cursor_seat_picker_uses_strip_window_not_plan() {
+    let cached = vec![
+        cursor_account_snapshot("acct-plan-hot", 95.0, 10.0, Some(8.0)),
+        cursor_account_snapshot("acct-auto-hot", 40.0, 70.0, Some(20.0)),
+    ];
+
+    let chosen = super::most_constrained_per_provider(&cached);
+    assert_eq!(chosen.len(), 1);
+    assert_eq!(
+        chosen[0].account_id.as_deref(),
+        Some("acct-auto-hot"),
+        "hotter Auto must win over hotter Plan"
+    );
+}
+
+#[test]
+fn cursor_seat_picker_prefers_api_room_over_exhausted_auto_on_other_seat() {
+    let cached = vec![
+        cursor_account_snapshot("acct-auto-maxed", 40.0, 100.0, Some(15.0)),
+        cursor_account_snapshot("acct-auto-open", 90.0, 20.0, Some(100.0)),
+    ];
+
+    let chosen = super::most_constrained_per_provider(&cached);
+    assert_eq!(
+        chosen[0].account_id.as_deref(),
+        Some("acct-auto-open"),
+        "Auto with room (20%) is the strip window; the other seat's API 15% is cooler"
+    );
+}
+
 #[test]
 fn the_taskbar_strip_skips_providers_that_failed_to_fetch() {
     let mut errored = account_snapshot("acct-work", 91.0);

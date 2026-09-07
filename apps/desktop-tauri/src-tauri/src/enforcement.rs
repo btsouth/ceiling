@@ -8,12 +8,13 @@
 //! quietly drop out. Surfaces can then show honest uncertainty instead of
 //! silently losing a limit or fabricating a percentage for it.
 //!
-//! Scope is `provider | data source | account identity` (shared with the
-//! capacity-event observer), so accounts, sources, and providers never bleed
-//! into each other. State is process-local: the first read of each scope after
-//! launch is a fresh baseline that never emits `unavailable`, mirroring the
-//! observer's re-baseline-on-launch behaviour so changes that happened while
-//! Ceiling was closed are not replayed as surprises.
+//! Scope is `provider | data source | account identity` including directory
+//! `account_id` (shared with the capacity-event observer), so accounts,
+//! sources, and providers never bleed into each other. State is process-local:
+//! the first read of each scope after launch is a fresh baseline that never
+//! emits `unavailable`, mirroring the observer's re-baseline-on-launch
+//! behaviour so changes that happened while Ceiling was closed are not
+//! replayed as surprises.
 
 use std::collections::HashMap;
 
@@ -368,6 +369,29 @@ mod tests {
         other_org.secondary_label = None;
         assert!(tracker.annotate(&mut other_org).is_empty());
         assert!(other_org.inactive_rate_windows.is_empty());
+    }
+
+    #[test]
+    fn shared_email_directory_seats_do_not_flag_each_other() {
+        // Codex personal + Team seats share a login email and can share an
+        // organization label; directory `account_id` is what keeps their
+        // enforcement baselines apart (SBS-1079). Without it, the work seat's
+        // first read would inherit the personal seat's expected windows.
+        let mut tracker = EnforcementTracker::new();
+        let mut personal = codex_snapshot();
+        personal.account_email = Some("Same@Example.com".into());
+        personal.account_organization = Some("Team".into());
+        personal.account_id = Some("acct-personal".into());
+        tracker.annotate(&mut personal);
+
+        let mut work = codex_snapshot();
+        work.account_email = Some("Same@Example.com".into());
+        work.account_organization = Some("Team".into());
+        work.account_id = Some("acct-work".into());
+        work.secondary = None;
+        work.secondary_label = None;
+        assert!(tracker.annotate(&mut work).is_empty());
+        assert!(work.inactive_rate_windows.is_empty());
     }
 
     #[test]

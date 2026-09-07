@@ -36,4 +36,4 @@ Thanks @insanowsky for the request (#164).
 
 Patch on **1.5.14**.
 
-**Full Changelog**: https://github.com/tsouth89/ceiling/compare/v1.5.14...v1.5.15
+**Full Changelog**: https://github.com/btsouth/ceiling/compare/v1.5.14...v1.5.15

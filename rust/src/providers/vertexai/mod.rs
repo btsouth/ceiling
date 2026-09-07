@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use crate::core::{
     FetchContext, Provider, ProviderError, ProviderFetchResult, ProviderId, ProviderMetadata,
-    RateWindow, SourceMode, UsageSnapshot,
+    SourceMode, UsageSnapshot,
 };
 
 /// Vertex AI provider
@@ -125,8 +125,7 @@ impl VertexAIProvider {
             #[cfg(windows)]
             cmd.creation_flags(CREATE_NO_WINDOW);
 
-            let output = cmd
-                .output()
+            let output = crate::host::tokio_cli::output(&mut cmd)
                 .await
                 .map_err(|e| ProviderError::Other(e.to_string()))?;
 
@@ -184,13 +183,10 @@ impl VertexAIProvider {
             .build()
             .map_err(|e| ProviderError::Other(e.to_string()))?;
 
-        // Get project ID from config
-        let project_id = self
-            .get_project_id()
-            .await
-            .unwrap_or_else(|_| "unknown".to_string());
+        let project_id = self.get_project_id().await?;
 
-        // Vertex AI billing/quota API
+        // Resource Manager `projects.get` is identity metadata, not quota.
+        // A failed or usage-less response must not collapse to 0% (SBS-1061).
         let resp = client
             .get(format!(
                 "https://cloudresourcemanager.googleapis.com/v1/projects/{}",
@@ -201,19 +197,12 @@ impl VertexAIProvider {
             .await;
 
         match resp {
-            Ok(r) if r.status().is_success() => {
-                let json: serde_json::Value = r
-                    .json()
-                    .await
-                    .map_err(|e| ProviderError::Parse(e.to_string()))?;
-                self.parse_usage_response(&json, &project_id)
+            Ok(r) => {
+                let status = r.status();
+                let body = r.json().await.map_err(|e| e.to_string());
+                usage_from_resource_manager_http(status, body, &project_id)
             }
-            _ => {
-                // Return placeholder with project info
-                let usage = UsageSnapshot::new(RateWindow::new(0.0))
-                    .with_login_method(format!("Vertex AI ({})", project_id));
-                Ok(usage)
-            }
+            Err(e) => Err(e.into()),
         }
     }
 
@@ -249,44 +238,63 @@ impl VertexAIProvider {
         Err(ProviderError::Other("Project ID not found".to_string()))
     }
 
-    fn parse_usage_response(
-        &self,
-        json: &serde_json::Value,
-        project_id: &str,
-    ) -> Result<UsageSnapshot, ProviderError> {
-        // Parse project info - actual usage would require Cloud Billing API
-        let project_name = json
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or(project_id);
-
-        let usage = UsageSnapshot::new(RateWindow::new(0.0))
-            .with_login_method(format!("Vertex AI ({})", project_name));
-
-        Ok(usage)
-    }
-
-    /// Probe CLI for detection
+    /// Probe CLI for detection. gcloud presence is not a usage reading.
     async fn probe_cli(&self) -> Result<UsageSnapshot, ProviderError> {
-        let gcloud = Self::which_gcloud().ok_or_else(|| {
-            ProviderError::NotInstalled(
-                "gcloud CLI not found. Install from https://cloud.google.com/sdk".to_string(),
-            )
-        })?;
+        let installed = Self::which_gcloud().is_some_and(|path| path.exists());
+        usage_from_cli_presence(installed)
+    }
+}
 
-        if gcloud.exists() {
-            let project = self.get_project_id().await.ok();
-            let label = if let Some(p) = project {
-                format!("Vertex AI ({})", p)
-            } else {
-                "Vertex AI (installed)".to_string()
-            };
+/// Map a Resource Manager HTTP outcome to usage. Fail-closed (SBS-1061):
+/// non-success and unreadable bodies are errors, never `Ok(0%)`.
+fn usage_from_resource_manager_http(
+    status: reqwest::StatusCode,
+    body: Result<serde_json::Value, String>,
+    project_id: &str,
+) -> Result<UsageSnapshot, ProviderError> {
+    if !status.is_success() {
+        return Err(resource_manager_http_failure(status));
+    }
+    let json = body.map_err(ProviderError::Parse)?;
+    usage_from_resource_manager_metadata(&json, project_id)
+}
 
-            let usage = UsageSnapshot::new(RateWindow::new(0.0)).with_login_method(&label);
-            Ok(usage)
-        } else {
-            Err(ProviderError::NotInstalled("gcloud not found".to_string()))
-        }
+/// HTTP failure from Resource Manager. Never a 0% snapshot (SBS-1061).
+fn resource_manager_http_failure(status: reqwest::StatusCode) -> ProviderError {
+    if status == reqwest::StatusCode::UNAUTHORIZED || status == reqwest::StatusCode::FORBIDDEN {
+        ProviderError::AuthRequired
+    } else {
+        ProviderError::Other(format!(
+            "Vertex AI Resource Manager request failed: HTTP {status}"
+        ))
+    }
+}
+
+/// Resource Manager `projects.get` is project metadata, not quota.
+/// Treating it as 0% used is what made Vertex look empty/healthy (SBS-1061).
+fn usage_from_resource_manager_metadata(
+    json: &serde_json::Value,
+    project_id: &str,
+) -> Result<UsageSnapshot, ProviderError> {
+    let project_name = json
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(project_id);
+    Err(ProviderError::Parse(format!(
+        "Google Cloud Resource Manager metadata for '{project_name}' is not a usage reading"
+    )))
+}
+
+/// gcloud being installed is not a usage reading (SBS-1061).
+fn usage_from_cli_presence(installed: bool) -> Result<UsageSnapshot, ProviderError> {
+    if installed {
+        Err(ProviderError::Other(
+            "gcloud is installed, but Vertex AI usage is not available from the CLI".to_string(),
+        ))
+    } else {
+        Err(ProviderError::NotInstalled(
+            "gcloud CLI not found. Install from https://cloud.google.com/sdk".to_string(),
+        ))
     }
 }
 
@@ -339,5 +347,112 @@ impl Provider for VertexAIProvider {
 
     fn supports_cli(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The old fail-open returned `Ok(RateWindow::new(0.0))`. This helper is
+    /// what proves SBS-1061: restore that and the test panics.
+    fn assert_failure_is_not_zero_percent(result: Result<UsageSnapshot, ProviderError>) {
+        if let Ok(usage) = result {
+            panic!(
+                "failure must not be reported as {}% used",
+                usage.primary.used_percent
+            );
+        }
+    }
+
+    /// SBS-1061: HTTP 5xx used to mint a healthy 0% snapshot.
+    #[test]
+    fn http_failure_is_not_reported_as_zero_percent() {
+        for status in [
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            reqwest::StatusCode::BAD_GATEWAY,
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::UNAUTHORIZED,
+            reqwest::StatusCode::NOT_FOUND,
+        ] {
+            assert_failure_is_not_zero_percent(usage_from_resource_manager_http(
+                status,
+                Err("ignored on failure".to_string()),
+                "my-project",
+            ));
+        }
+        assert!(matches!(
+            usage_from_resource_manager_http(
+                reqwest::StatusCode::FORBIDDEN,
+                Err("no body".to_string()),
+                "my-project",
+            ),
+            Err(ProviderError::AuthRequired)
+        ));
+    }
+
+    /// SBS-1061: a 200 whose body cannot be decoded is still not 0%.
+    #[test]
+    fn http_decode_failure_is_not_reported_as_zero_percent() {
+        assert_failure_is_not_zero_percent(usage_from_resource_manager_http(
+            reqwest::StatusCode::OK,
+            Err("expected value at line 1 column 1".to_string()),
+            "my-project",
+        ));
+        let err = usage_from_resource_manager_http(
+            reqwest::StatusCode::OK,
+            Err("expected value at line 1 column 1".to_string()),
+            "my-project",
+        )
+        .expect_err("unreadable body is a decode failure");
+        assert!(
+            matches!(err, ProviderError::Parse(_)),
+            "decode failure must stay Parse, got {err:?}"
+        );
+    }
+
+    /// SBS-1061: a successful Resource Manager project payload has no quota.
+    /// The old parser turned that metadata into 0% used.
+    #[test]
+    fn resource_manager_metadata_is_not_reported_as_zero_percent() {
+        let json = serde_json::json!({
+            "name": "projects/my-gcp-project",
+            "projectId": "my-gcp-project",
+            "lifecycleState": "ACTIVE"
+        });
+        let result = usage_from_resource_manager_metadata(&json, "my-gcp-project");
+        assert_failure_is_not_zero_percent(result);
+        let err = usage_from_resource_manager_metadata(&json, "my-gcp-project")
+            .expect_err("metadata is not a usage reading");
+        let message = err.to_string();
+        assert!(
+            message.contains("not a usage reading"),
+            "decode/metadata failure must say why, got {message}"
+        );
+    }
+
+    /// SBS-1061: empty / unreadable JSON is a decode failure, not 0%.
+    #[test]
+    fn decode_failure_is_not_reported_as_zero_percent() {
+        for json in [
+            serde_json::json!({}),
+            serde_json::json!("not-a-project"),
+            serde_json::json!(null),
+        ] {
+            assert_failure_is_not_zero_percent(usage_from_resource_manager_metadata(
+                &json, "unknown",
+            ));
+        }
+    }
+
+    /// SBS-1061: Auto used to fall through to "gcloud exists → 0%".
+    #[test]
+    fn cli_presence_is_not_reported_as_zero_percent() {
+        assert_failure_is_not_zero_percent(usage_from_cli_presence(true));
+        assert_failure_is_not_zero_percent(usage_from_cli_presence(false));
+        assert!(matches!(
+            usage_from_cli_presence(false),
+            Err(ProviderError::NotInstalled(_))
+        ));
     }
 }

@@ -5,7 +5,7 @@ edition = "2024"
 authors = ["Ceiling Contributors"]
 description = "Local-first Windows companion for monitoring AI capacity and reset times"
 license = "MIT"
-repository = "https://github.com/tsouth89/ceiling"
+repository = "https://github.com/btsouth/ceiling"
 keywords = ["ai", "usage", "monitoring", "claude", "codex"]
 categories = ["command-line-utilities"]
 

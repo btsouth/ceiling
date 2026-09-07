@@ -22,7 +22,8 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::core::{
-    ProviderId, RateWindow, WidgetProviderEntry, WidgetSnapshot, WidgetSnapshotStore,
+    NamedRateWindow, ProviderId, RateWindow, WidgetProviderEntry, WidgetSnapshot,
+    WidgetSnapshotStore,
 };
 use crate::cost_scanner::{CostScanner, CostSummary, get_cost_usage_report};
 use crate::settings::Settings;
@@ -95,7 +96,7 @@ impl CeilingMcp {
     }
 
     #[tool(
-        description = "Cheap compact status: remaining quota from the desktop snapshot plus today's estimated spend from a 1-day local log scan (not the 30-day get_spend walk). Good for 'am I about to hit my cap?' checks. remaining_percent is the constraining window across primary/secondary/tertiary (same ranking as the desktop strip: exhausted first, then highest used %), so an exhausted Weekly is not hidden behind a healthy session. usage.period_cost_usd is billed/current-period cost, not session spend; today_spend is local estimated log spend for today. Use get_spend for 7/30-day totals."
+        description = "Cheap compact status: remaining quota from the desktop snapshot plus today's estimated spend from a 1-day local log scan (not the 30-day get_spend walk). Good for 'am I about to hit my cap?' checks. remaining_percent is the same window the desktop strip shows: Claude/Codex rank primary/secondary/tertiary (exhausted first, then highest used %); Cursor uses cursorStripWindow (hottest Auto/API with room, then on-demand when included lanes are gone or already billing, Plan only as fallback). usage.extra_rate_windows includes cursor-api and cursor-on-demand. usage.period_cost_usd is billed/current-period cost, not session spend; today_spend is local estimated log spend for today. Use get_spend for 7/30-day totals."
     )]
     fn get_status(
         &self,
@@ -120,9 +121,11 @@ impl ServerHandler for CeilingMcp {
                 "Ceiling local usage/spend tools. get_usage reads the desktop widget snapshot \
 (cache-only). get_spend scans local Codex/Claude/Grok logs for today, 7 days, and 30 days. \
 Prefer get_status for a cheap remaining-quota + today-$ check before starting a large job; \
-it does not run the 30-day spend scan. remaining_percent is the constraining \
-window across primary/secondary/tertiary (exhausted first, then highest used %), \
-not primary alone. usage.period_cost_usd is the \
+it does not run the 30-day spend scan. remaining_percent is the same window \
+the desktop strip shows: Claude/Codex rank primary/secondary/tertiary \
+(exhausted first, then highest used %); Cursor uses cursorStripWindow so Plan \
+does not outrank Auto and cursor-api / on-demand can bind the number. \
+usage.period_cost_usd is the \
 provider billed/current-period figure (CostSnapshot.used), not this conversation's spend; \
 today_spend / get_spend are estimated API value from local logs, never a billed invoice. \
 Account email and login method are omitted unless the server was started with \
@@ -249,6 +252,11 @@ fn entry_usage_json(entry: &WidgetProviderEntry, include_identity: bool) -> serd
         "primary": window_json(entry.primary.as_ref()),
         "secondary": window_json(entry.secondary.as_ref()),
         "tertiary": window_json(entry.tertiary.as_ref()),
+        "extra_rate_windows": entry
+            .extra_rate_windows
+            .iter()
+            .map(extra_window_json)
+            .collect::<Vec<_>>(),
         "period_cost_usd": entry.token_usage.as_ref().and_then(|t| t.period_cost_usd),
         "cost_period": entry.token_usage.as_ref().and_then(|t| t.cost_period.clone()),
     })
@@ -266,6 +274,28 @@ fn window_json(window: Option<&RateWindow>) -> serde_json::Value {
         "reset_countdown": window.format_countdown(),
         "is_exhausted": window.is_exhausted(),
     })
+}
+
+fn extra_window_json(extra: &NamedRateWindow) -> serde_json::Value {
+    let mut value = window_json(Some(&extra.window));
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert("id".into(), json!(extra.id));
+        obj.insert("title".into(), json!(extra.title));
+        obj.insert(
+            "amount".into(),
+            extra
+                .amount
+                .as_ref()
+                .map_or(serde_json::Value::Null, |amount| {
+                    json!({
+                        "used": amount.used,
+                        "limit": amount.limit,
+                        "currency_code": amount.currency_code,
+                    })
+                }),
+        );
+    }
+    value
 }
 
 /// Inclusive local calendar days `get_spend` walks for today / 7-day / 30-day totals.
@@ -398,12 +428,12 @@ fn status_payload_with_spend(
         spend_for(cli)
     });
 
-    // SBS-1055: remaining_percent is the advertised cap-check sink. Copying
-    // only usage.primary hid an exhausted Claude/Codex Weekly behind a healthy
-    // session. Rank the slots the widget snapshot carries the same way the
-    // desktop strip does (capacityPresentation.constrainingWindow).
+    // SBS-1055 / SBS-1076: remaining_percent is the advertised cap-check sink.
+    // Copying only usage.primary hid an exhausted Claude/Codex Weekly. Generic
+    // window_outranks then let Cursor Plan outrank Auto. Use the same ranking
+    // as the desktop strip, including cursor-api / on-demand extras.
     let remaining = chosen_entry
-        .and_then(constraining_rate_window)
+        .and_then(WidgetProviderEntry::constraining_rate_window)
         .map(RateWindow::remaining_percent);
 
     json!({
@@ -445,50 +475,10 @@ fn choose_status_provider(
         .map(|e| e.provider)
 }
 
-/// Window that actually constrains this provider.
-///
-/// Mirrors desktop `constrainingWindow` over the slots the widget snapshot
-/// carries (primary / secondary / tertiary). Exhausted/maxed outranks
-/// everything, then highest used %, then soonest reset.
-fn constraining_rate_window(entry: &WidgetProviderEntry) -> Option<&RateWindow> {
-    let mut best = entry.primary.as_ref();
-    for candidate in [entry.secondary.as_ref(), entry.tertiary.as_ref()]
-        .into_iter()
-        .flatten()
-    {
-        match best {
-            None => best = Some(candidate),
-            Some(current) if window_outranks(candidate, current) => best = Some(candidate),
-            _ => {}
-        }
-    }
-    best
-}
-
-fn window_outranks(candidate: &RateWindow, best: &RateWindow) -> bool {
-    let candidate_blocking = candidate.is_exhausted();
-    let best_blocking = best.is_exhausted();
-    if candidate_blocking != best_blocking {
-        return candidate_blocking;
-    }
-    match candidate.used_percent.total_cmp(&best.used_percent) {
-        std::cmp::Ordering::Greater => true,
-        std::cmp::Ordering::Less => false,
-        std::cmp::Ordering::Equal => reset_at_rank(candidate) < reset_at_rank(best),
-    }
-}
-
-fn reset_at_rank(window: &RateWindow) -> i64 {
-    window
-        .resets_at
-        .map(|dt| dt.timestamp_millis())
-        .unwrap_or(i64::MAX)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{RateWindow, TokenUsageSummary};
+    use crate::core::{NamedRateWindow, RateWindow, TokenUsageSummary, WindowAmount};
     use chrono::Utc;
 
     fn sample_snapshot() -> WidgetSnapshot {
@@ -808,9 +798,97 @@ mod tests {
                 Some(soon),
                 None,
             ));
-        let window = constraining_rate_window(&entry).expect("window");
+        let window = entry.constraining_rate_window().expect("window");
         assert_eq!(window.window_minutes, Some(10_080));
         assert_eq!(window.remaining_percent(), 50.0);
+    }
+
+    fn cursor_entry(
+        plan: f64,
+        auto: Option<f64>,
+        extras: Vec<NamedRateWindow>,
+    ) -> WidgetProviderEntry {
+        let mut entry = WidgetProviderEntry::new(ProviderId::Cursor, Utc::now())
+            .with_primary(RateWindow::new(plan));
+        if let Some(auto) = auto {
+            entry = entry.with_secondary(RateWindow::new(auto));
+        }
+        entry.with_extra_rate_windows(extras)
+    }
+
+    /// SBS-1076: generic window_outranks picks Plan 95% over Auto 55%.
+    #[test]
+    fn status_remaining_prefers_cursor_auto_over_hotter_plan() {
+        let snap = WidgetSnapshot::new(vec![cursor_entry(95.0, Some(55.0), vec![])], Utc::now());
+        let payload = status_without_spend_scan(Some(&snap), Some("cursor"), &default_enabled());
+        assert_eq!(
+            payload["remaining_percent"], 45.0,
+            "Auto must bind remaining_percent, not hotter Plan: {payload}"
+        );
+        assert_eq!(payload["usage"]["primary"]["remaining_percent"], 5.0);
+        assert_eq!(payload["usage"]["secondary"]["remaining_percent"], 45.0);
+    }
+
+    /// SBS-1076: exhausted-first ranking would hide API room behind Auto 100%.
+    #[test]
+    fn status_remaining_prefers_cursor_api_with_room_over_exhausted_auto() {
+        let extras = vec![NamedRateWindow::new(
+            "cursor-api",
+            "API",
+            RateWindow::new(40.0),
+        )];
+        let snap = WidgetSnapshot::new(vec![cursor_entry(40.0, Some(100.0), extras)], Utc::now());
+        let payload = status_without_spend_scan(Some(&snap), Some("cursor"), &default_enabled());
+        assert_eq!(
+            payload["remaining_percent"], 60.0,
+            "API with room must bind remaining_percent: {payload}"
+        );
+        assert_eq!(
+            payload["usage"]["extra_rate_windows"][0]["id"],
+            "cursor-api"
+        );
+        assert_eq!(
+            payload["usage"]["extra_rate_windows"][0]["remaining_percent"],
+            60.0
+        );
+    }
+
+    /// SBS-1076: on-demand is the strip window once included lanes are gone.
+    #[test]
+    fn status_remaining_surfaces_cursor_on_demand_after_included_exhausted() {
+        let extras = vec![
+            NamedRateWindow::new("cursor-api", "API", RateWindow::new(100.0)),
+            NamedRateWindow::new("cursor-on-demand", "On-demand", RateWindow::new(56.0))
+                .with_amount(WindowAmount::new(1_002.16, "USD").with_limit(1_800.0)),
+        ];
+        let snap = WidgetSnapshot::new(vec![cursor_entry(100.0, Some(100.0), extras)], Utc::now());
+        let payload = status_without_spend_scan(Some(&snap), Some("cursor"), &default_enabled());
+        assert_eq!(payload["remaining_percent"], 44.0, "payload: {payload}");
+        let on_demand = payload["usage"]["extra_rate_windows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|w| w["id"] == "cursor-on-demand")
+            .expect("on-demand extra");
+        assert_eq!(on_demand["remaining_percent"], 44.0);
+        assert_eq!(on_demand["amount"]["used"], 1002.16);
+        assert_eq!(on_demand["amount"]["limit"], 1800.0);
+    }
+
+    #[test]
+    fn usage_includes_cursor_api_and_on_demand_extras() {
+        let extras = vec![
+            NamedRateWindow::new("cursor-api", "API", RateWindow::new(12.0)),
+            NamedRateWindow::new("cursor-on-demand", "On-demand", RateWindow::new(0.0))
+                .with_amount(WindowAmount::new(0.0, "USD").with_limit(1_800.0)),
+        ];
+        let snap = WidgetSnapshot::new(vec![cursor_entry(40.0, Some(20.0), extras)], Utc::now());
+        let payload = usage_payload(Some(&snap), Some("cursor"), false);
+        let extras = payload["providers"][0]["extra_rate_windows"]
+            .as_array()
+            .expect("extras");
+        let ids: Vec<&str> = extras.iter().map(|w| w["id"].as_str().unwrap()).collect();
+        assert_eq!(ids, vec!["cursor-api", "cursor-on-demand"]);
     }
 
     #[test]

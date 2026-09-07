@@ -213,7 +213,8 @@ pub struct Settings {
     /// Refresh interval in seconds (0 = manual only)
     pub refresh_interval_secs: u64,
 
-    /// Force-refresh enabled providers whenever the tray/menu surface opens.
+    /// Legacy compatibility field. Opening a tray/menu surface does not
+    /// force-refresh; nothing reads this flag.
     #[serde(default)]
     pub refresh_all_providers_on_menu_open: bool,
 

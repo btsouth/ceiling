@@ -2,6 +2,7 @@
 
 pub mod command_runner;
 pub mod session;
+pub mod tokio_cli;
 pub mod windows_system;
 
 pub use windows_system::{windows_powershell_exe, windows_system_exe, windows_where_exe};

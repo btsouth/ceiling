@@ -49,4 +49,4 @@ Portable builds show alerts as banners but do not keep them in the notification 
 
 ---
 
-**Full Changelog**: https://github.com/tsouth89/ceiling/compare/v1.5.22...v1.5.24
+**Full Changelog**: https://github.com/btsouth/ceiling/compare/v1.5.22...v1.5.24

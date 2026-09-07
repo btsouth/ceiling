@@ -171,7 +171,7 @@ if ($tauriConfig.identifier -eq "io.github.tsouth89.ceiling") {
 
 Assert-FileContains "Cargo repository points to Ceiling" `
     (Join-Path $RepoRoot "rust\Cargo.toml") `
-    'repository = "https://github\.com/tsouth89/ceiling"'
+    'repository = "https://github\.com/btsouth/ceiling"'
 Assert-FileContains "Installer product name is Ceiling" `
     (Join-Path $RepoRoot "rust\installer\codexbar.iss") `
     '#define MyAppName "Ceiling"'

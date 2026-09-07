@@ -34,7 +34,7 @@ Create an annotated `v<version>` tag from the merged `main` commit and push it.
    the public download has no redirect and the expected SHA-256.
 
 The GitHub `release` environment accepts only `v*` tags. Its federated identity
-is `repo:tsouth89/ceiling:environment:release`; the workflow uses environment
+is `repo:btsouth/ceiling:environment:release`; the workflow uses environment
 variables for Azure resource identifiers and does not store an Azure secret.
 
 Microsoft Store installers are published under

@@ -896,6 +896,21 @@ describe("capacityPresentation", () => {
       ).toBe(false);
     });
 
+    it("does not invent 0% when Vertex fetch/decode failed (SBS-1061)", () => {
+      const snap = provider({
+        providerId: "vertexai",
+        displayName: "Vertex AI",
+        primary: window(0),
+        primaryLabel: "Usage",
+        error: "Vertex AI Resource Manager request failed: HTTP 500",
+      });
+      expect(providerGlanceStatus(snap)).toBe("error");
+      expect(glanceMeters(snap).primary).toBeNull();
+      expect(glanceMeters(snap).companions).toEqual([]);
+      expect(allMeasuredWindows(snap)).toEqual([]);
+      expect(capacityFreshness(snap)).toBe("error");
+    });
+
     it("still heroes a real 0% plan when no inactive row marks it a placeholder", () => {
       // Unknown is not empty: a genuine 0% reading must stay a 0% hero.
       const snap = provider({

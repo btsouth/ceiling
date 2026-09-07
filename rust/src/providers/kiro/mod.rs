@@ -95,8 +95,7 @@ impl KiroProvider {
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
-        let output = cmd
-            .output()
+        let output = crate::host::tokio_cli::output(&mut cmd)
             .await
             .map_err(|e| ProviderError::Other(format!("Failed to run kiro-cli: {}", e)))?;
 
@@ -138,8 +137,7 @@ impl KiroProvider {
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
-        let output = cmd
-            .output()
+        let output = crate::host::tokio_cli::output(&mut cmd)
             .await
             .map_err(|e| ProviderError::Other(format!("Failed to run kiro-cli: {}", e)))?;
 
@@ -173,8 +171,8 @@ impl KiroProvider {
         let lowered = stripped.to_lowercase();
         let parsed = Self::parse_usage_fields(&stripped, &lowered);
 
-        if let Some(usage) = Self::usage_without_metrics(&parsed) {
-            return Ok(usage);
+        if let Some(err) = Self::usage_without_metrics_error(&parsed) {
+            return Err(err);
         }
 
         let mut usage = Self::usage_with_metrics(&parsed);
@@ -206,18 +204,14 @@ impl KiroProvider {
         Ok(())
     }
 
-    fn usage_without_metrics(parsed: &KiroCliUsage) -> Option<UsageSnapshot> {
+    /// CLI output with a plan name but no credits/percent is not 0% (SBS-1061).
+    fn usage_without_metrics_error(parsed: &KiroCliUsage) -> Option<ProviderError> {
         if parsed.matched_percent || parsed.matched_credits {
             return None;
         }
-
-        let method = if parsed.matched_new_format || parsed.plan_name != "Kiro" {
-            parsed.plan_name.as_str()
-        } else {
-            "Kiro (installed)"
-        };
-
-        Some(UsageSnapshot::new(RateWindow::new(0.0)).with_login_method(method))
+        Some(ProviderError::Parse(
+            "Kiro CLI output has no usage reading".to_string(),
+        ))
     }
 
     fn usage_with_metrics(parsed: &KiroCliUsage) -> UsageSnapshot {
@@ -467,5 +461,42 @@ impl Provider for KiroProvider {
 
     fn supports_cli(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_failure_is_not_zero_percent(result: Result<UsageSnapshot, ProviderError>) {
+        if let Ok(usage) = result {
+            panic!(
+                "failure must not be reported as {}% used",
+                usage.primary.used_percent
+            );
+        }
+    }
+
+    /// SBS-1061: a plan name with no credits/percent used to mint 0%.
+    #[test]
+    fn cli_output_without_metrics_is_not_reported_as_zero_percent() {
+        let provider = KiroProvider::new();
+        assert_failure_is_not_zero_percent(provider.parse_cli_output("Plan: Pro\nWelcome to Kiro"));
+        let err = provider
+            .parse_cli_output("Kiro (installed)")
+            .expect_err("no metrics is a decode failure");
+        assert!(
+            matches!(err, ProviderError::Parse(_)),
+            "missing metrics must stay Parse, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn cli_output_with_percent_is_a_reading() {
+        let usage = KiroProvider::new()
+            .parse_cli_output("Plan: Pro\n██████ 42%")
+            .expect("percent bar is a reading");
+        assert_eq!(usage.primary.used_percent, 42.0);
+        assert_eq!(usage.login_method.as_deref(), Some("Pro"));
     }
 }

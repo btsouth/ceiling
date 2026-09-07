@@ -149,7 +149,7 @@ describe("AboutTab", () => {
 
     expect(tauriMocks.openExternalUrl).toHaveBeenNthCalledWith(
       1,
-      "https://github.com/tsouth89/ceiling",
+      "https://github.com/btsouth/ceiling",
     );
     expect(tauriMocks.openExternalUrl).toHaveBeenNthCalledWith(
       2,

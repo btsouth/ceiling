@@ -7,7 +7,7 @@
 <p align="center"><strong>AI usage. One elegant view.</strong></p>
 
 <p align="center">
-  <a href="https://github.com/tsouth89/ceiling/releases/latest"><img src="https://img.shields.io/github/v/release/tsouth89/ceiling?sort=semver&display_name=tag&label=release&color=2ea44f" alt="Latest release"></a>
+  <a href="https://github.com/btsouth/ceiling/releases/latest"><img src="https://img.shields.io/github/v/release/btsouth/ceiling?sort=semver&display_name=tag&label=release&color=2ea44f" alt="Latest release"></a>
   <img src="https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D6?logo=windows&logoColor=white" alt="Windows 10 and 11">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT license"></a>
   <a href="https://discord.gg/Xsn27MxdBA"><img src="https://img.shields.io/badge/Discord-join%20the%20community-5865F2?logo=discord&logoColor=white" alt="Join the Discord community"></a>
@@ -17,7 +17,7 @@
 <p align="center">
   <a href="https://ceiling.win/download"><strong>Download for Windows</strong></a>
   &nbsp;·&nbsp; <a href="https://ceiling.win">ceiling.win</a>
-  &nbsp;·&nbsp; <a href="https://github.com/tsouth89/ceiling/releases">all releases</a>
+  &nbsp;·&nbsp; <a href="https://github.com/btsouth/ceiling/releases">all releases</a>
 </p>
 
 ---
@@ -60,14 +60,14 @@ These six get the most complete support, and each one has its data source docume
 
 Ceiling runs on Windows 10 and 11.
 
-**[Download for Windows](https://ceiling.win/download)** &nbsp;·&nbsp; [ceiling.win](https://ceiling.win) &nbsp;·&nbsp; [all releases](https://github.com/tsouth89/ceiling/releases)
+**[Download for Windows](https://ceiling.win/download)** &nbsp;·&nbsp; [ceiling.win](https://ceiling.win) &nbsp;·&nbsp; [all releases](https://github.com/btsouth/ceiling/releases)
 
 The installer and portable build are code-signed. Ceiling is local-first: it reads usage from sources on your PC or from each provider's own usage endpoint, and never sends your credentials or usage data to Ceiling-operated servers. See [How Ceiling gets your data](docs/DATA_SOURCES.md) for the per-provider detail.
 
 ## Development
 
 ```powershell
-git clone https://github.com/tsouth89/ceiling.git
+git clone https://github.com/btsouth/ceiling.git
 cd ceiling
 pnpm --dir apps/desktop-tauri install --frozen-lockfile
 pnpm --dir apps/desktop-tauri tauri:dev
@@ -83,7 +83,7 @@ For the active implementation state and the next work items, see
 
 ## Contributing
 
-New here? Start with an issue tagged [`good first issue`](https://github.com/tsouth89/ceiling/labels/good%20first%20issue), then read [CONTRIBUTING.md](https://github.com/tsouth89/ceiling/blob/main/CONTRIBUTING.md) for the workflow. See [docs/CLI.md](docs/CLI.md) for the `codexbar` CLI reference.
+New here? Start with an issue tagged [`good first issue`](https://github.com/btsouth/ceiling/labels/good%20first%20issue), then read [CONTRIBUTING.md](https://github.com/btsouth/ceiling/blob/main/CONTRIBUTING.md) for the workflow. See [docs/CLI.md](docs/CLI.md) for the `codexbar` CLI reference.
 
 ## Lineage, license, and credits
 

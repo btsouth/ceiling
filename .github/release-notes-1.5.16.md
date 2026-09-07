@@ -22,4 +22,4 @@ Pick From / To (inclusive local days, up to 366 days) and you should see dollars
 
 Hotfix on **1.5.15**.
 
-**Full Changelog**: https://github.com/tsouth89/ceiling/compare/v1.5.15...v1.5.16
+**Full Changelog**: https://github.com/btsouth/ceiling/compare/v1.5.15...v1.5.16

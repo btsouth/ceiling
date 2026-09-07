@@ -342,6 +342,20 @@ static CODEX_PRICING: LazyLock<HashMap<&'static str, CodexPricing>> = LazyLock::
         },
     );
 
+    // GPT-6 Astra standard rates. Codex usage of Astra does not incur the
+    // >272K long-context multipliers and Codex does not charge cache writes,
+    // so the short-context rates apply at every context size.
+    m.insert(
+        "gpt-6-astra",
+        CodexPricing {
+            input_cost_per_token: 1e-5,
+            output_cost_per_token: 5e-5,
+            cache_read_input_cost_per_token: 1e-6,
+            display_label: None,
+            long_context: None,
+        },
+    );
+
     m
 });
 
@@ -667,6 +681,10 @@ impl CostUsagePricing {
 
         if trimmed == "gpt-5.6" {
             return "gpt-5.6-sol".to_string();
+        }
+
+        if trimmed == "gpt-6" {
+            return "gpt-6-astra".to_string();
         }
 
         trimmed

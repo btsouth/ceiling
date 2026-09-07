@@ -11,7 +11,7 @@ import ceilingIcon from "../../../assets/ceiling-icon.png";
 const ABOUT_LINKS = [
   {
     label: "GitHub",
-    url: "https://github.com/tsouth89/ceiling",
+    url: "https://github.com/btsouth/ceiling",
   },
   {
     label: "Website",
