@@ -883,7 +883,7 @@ impl Settings {
         }
 
         // Loading can become a write: an older file may still embed
-        // credentials, and SBS-954's quarantine rename is a write too.
+        // credentials, and SBS-954/SBS-1074's quarantine rename is a write too.
         // Re-read after taking the lock so those writes cannot move a
         // concurrent try_update repair to settings.json.bak (SBS-1029).
         match crate::secure_file::with_state_write_lock(|| Ok(Self::load_unlocked())) {
@@ -914,10 +914,10 @@ impl Settings {
         settings
     }
 
-    /// Read `settings.json`. `allow_quarantine` is the rename from SBS-954;
-    /// only the locked path may set it. The second value is `true` when the
-    /// file existed, failed to parse, and was left in place so `load` can
-    /// retry under the state lock (SBS-1029).
+    /// Read `settings.json`. `allow_quarantine` is the rename from SBS-954 /
+    /// SBS-1074; only the locked path may set it. The second value is `true`
+    /// when the file existed, could not be parsed or read, and was left in
+    /// place so `load` can retry under the state lock (SBS-1029).
     fn load_from_disk(allow_quarantine: bool) -> (Self, bool) {
         let mut pending_quarantine = false;
         #[allow(unused_mut)]
@@ -944,16 +944,30 @@ impl Settings {
         match crate::secure_file::read_string(path) {
             Ok(content) => match Self::parse_settings_json(&content) {
                 Ok(settings) => (settings, false),
-                Err(error) if allow_quarantine => {
-                    Self::quarantine_unparseable(path, &error);
-                    (Self::default(), false)
+                Err(error) => {
+                    Self::handle_undecodable(path, allow_quarantine, &error, "could not be parsed")
                 }
-                Err(_) => (Self::default(), true),
             },
             Err(error) => {
-                tracing::warn!(%error, "settings.json could not be read; using defaults");
-                (Self::default(), false)
+                // DPAPI unprotect, an unsupported ProtectedFile version, or IO
+                // on an existing file. Mapping these to defaults with no `.bak`
+                // lets try_update overwrite the live undecodable bytes (SBS-1074).
+                Self::handle_undecodable(path, allow_quarantine, &error, "could not be read")
             }
+        }
+    }
+
+    fn handle_undecodable(
+        path: &std::path::Path,
+        allow_quarantine: bool,
+        error: &impl std::fmt::Display,
+        because: &'static str,
+    ) -> (Self, bool) {
+        if allow_quarantine {
+            Self::quarantine_live_file(path, error, because);
+            (Self::default(), false)
+        } else {
+            (Self::default(), true)
         }
     }
 
@@ -970,24 +984,28 @@ impl Settings {
         match Self::parse_settings_json(content) {
             Ok(settings) => settings,
             Err(error) => {
-                Self::quarantine_unparseable(path, &error);
+                Self::quarantine_live_file(path, &error, "could not be parsed");
                 Self::default()
             }
         }
     }
 
-    fn quarantine_unparseable(path: &std::path::Path, error: &serde_json::Error) {
+    fn quarantine_live_file(
+        path: &std::path::Path,
+        error: &impl std::fmt::Display,
+        because: &'static str,
+    ) {
         let backup = Self::backup_path(path);
         match std::fs::rename(path, &backup) {
             Ok(()) => tracing::warn!(
-                %error,
+                error = %error,
                 backup = %backup.display(),
-                "settings.json could not be parsed; original moved aside and defaults loaded"
+                "settings.json {because}; original moved aside and defaults loaded"
             ),
             Err(rename_error) => tracing::warn!(
-                %error,
+                error = %error,
                 %rename_error,
-                "settings.json could not be parsed; falling back to defaults without a backup"
+                "settings.json {because}; falling back to defaults without a backup"
             ),
         }
     }

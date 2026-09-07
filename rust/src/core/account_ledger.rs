@@ -259,12 +259,35 @@ impl AccountLedger {
     }
 
     /// Observe every known directory and persist when a switch was detected.
+    ///
+    /// An existing file that will not decode is left untouched. `load_default`
+    /// is fail-open for readers; using it here would treat DPAPI / parse / IO
+    /// failure as an empty ledger and the following save would wipe every
+    /// prior sighting (SBS-1074).
     pub fn record_and_persist(accounts: &ConfiguredAccounts, at: i64) {
-        let mut ledger = Self::load_default();
-        if !ledger.observe_all(accounts, at) {
+        Self::persist_if_changed(&Self::default_path(), |ledger| {
+            ledger.observe_all(accounts, at)
+        });
+    }
+
+    /// Load `path`, apply `mutate`, and write only when it reports a change.
+    /// A missing file is an empty ledger; an existing undecodable one is not
+    /// replaced.
+    pub(crate) fn persist_if_changed(path: &Path, mutate: impl FnOnce(&mut Self) -> bool) {
+        let mut ledger = match Self::load_from(path) {
+            Ok(ledger) => ledger,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "account-ledger.json could not be read; refusing to replace recorded sightings"
+                );
+                return;
+            }
+        };
+        if !mutate(&mut ledger) {
             return;
         }
-        if let Err(error) = ledger.save_to(&Self::default_path()) {
+        if let Err(error) = ledger.save_to(path) {
             tracing::warn!("failed to persist account ledger: {error}");
         }
     }
@@ -300,6 +323,9 @@ impl AccountLedger {
 
     /// Load from the default path, treating a corrupt file as empty rather than
     /// failing a refresh over attribution metadata.
+    ///
+    /// Read-only. Persist must go through [`Self::persist_if_changed`] so an
+    /// undecodable file is not rewritten from this empty snapshot.
     pub fn load_default() -> Self {
         Self::load_from(&Self::default_path()).unwrap_or_else(|error| {
             tracing::warn!("failed to load account ledger: {error}");
@@ -491,6 +517,78 @@ mod tests {
                 .attribute(ProviderId::Codex, Path::new("/dirs/a"), 200)
                 .account_key(),
             Some("acct-b")
+        );
+    }
+
+    /// SBS-1074: `record_and_persist` used `load_default`, which treats an
+    /// undecodable file as empty. The next switch observation then replaced
+    /// the live ledger with only the new sighting.
+    #[test]
+    fn persist_does_not_replace_an_undecodable_ledger() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("account-ledger.json");
+        let mut ledger = AccountLedger::new();
+        ledger.observe(ProviderId::Codex, Path::new("/dirs/a"), "acct-a", "a", 100);
+        ledger.save_to(&path).expect("seed");
+
+        let corrupt = "{not-valid-json";
+        std::fs::write(&path, corrupt).expect("corrupt ledger");
+
+        AccountLedger::persist_if_changed(&path, |ledger| {
+            ledger.observe(ProviderId::Codex, Path::new("/dirs/a"), "acct-b", "b", 200)
+        });
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("live"),
+            corrupt,
+            "an undecodable ledger must stay so prior sightings are not overwritten"
+        );
+        assert!(
+            AccountLedger::load_from(&path).is_err(),
+            "writers must not see a corrupt ledger as an empty store"
+        );
+    }
+
+    #[test]
+    fn persist_does_not_replace_an_unreadable_ledger() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("account-ledger.json");
+        let original = serde_json::json!({
+            "format": "codexbar.secure-file",
+            "version": 99,
+            "protection": "windows-dpapi-user",
+            "payload": "AAAA",
+        })
+        .to_string();
+        std::fs::write(&path, &original).expect("write unsupported ProtectedFile");
+        crate::secure_file::read_string(&path).expect_err("fixture must fail read_string");
+
+        AccountLedger::persist_if_changed(&path, |ledger| {
+            ledger.observe(ProviderId::Codex, Path::new("/dirs/a"), "acct-b", "b", 200)
+        });
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("live"),
+            original,
+            "a ProtectedFile this build cannot read must not be replaced"
+        );
+    }
+
+    #[test]
+    fn missing_ledger_can_still_be_persisted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("account-ledger.json");
+
+        AccountLedger::persist_if_changed(&path, |ledger| {
+            ledger.observe(ProviderId::Codex, Path::new("/dirs/a"), "acct-a", "a", 100)
+        });
+
+        let loaded = AccountLedger::load_from(&path).expect("first persist");
+        assert_eq!(
+            loaded
+                .attribute(ProviderId::Codex, Path::new("/dirs/a"), 100)
+                .account_key(),
+            Some("acct-a")
         );
     }
 

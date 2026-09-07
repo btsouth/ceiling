@@ -1831,6 +1831,141 @@ fn unlocked_corrupt_read_does_not_rename_a_concurrent_repair() {
     );
 }
 
+/// SBS-1074: `read_string` errors used to become defaults with no `.bak`, so
+/// the next [`Settings::try_update`] atomically replaced the live undecodable
+/// file. Parse failures already quarantine (SBS-954); treat a read failure
+/// on an existing file the same way.
+fn unsupported_protected_settings() -> String {
+    serde_json::json!({
+        "format": "codexbar.secure-file",
+        "version": 99,
+        "protection": "windows-dpapi-user",
+        "payload": "AAAA",
+    })
+    .to_string()
+}
+
+fn dpapi_protected_settings() -> String {
+    serde_json::json!({
+        "format": "codexbar.secure-file",
+        "version": 1,
+        "protection": "windows-dpapi-user",
+        "payload": "bm90LXJlYWwtZHBhcGk=",
+    })
+    .to_string()
+}
+
+/// The read-modify-write `try_update` takes: load under the lock (quarantine
+/// allowed), then atomically replace the live path with the in-memory
+/// snapshot. Tests use this instead of [`Settings::try_update`] so they do
+/// not touch the process config dir.
+fn try_update_write_at(path: &std::path::Path) {
+    let (settings, _) = Settings::read_path(path, true);
+    let json = serde_json::to_string_pretty(&settings).expect("serialize defaults");
+    crate::secure_file::write_string(path, &json).expect("try_update write");
+}
+
+fn assert_read_failure_is_pending_when_unlocked(path: &std::path::Path, original: &[u8]) {
+    let (loaded, pending_quarantine) = Settings::read_path(path, false);
+    assert!(
+        pending_quarantine,
+        "an unlocked read failure must ask load() to retry under the lock"
+    );
+    assert_eq!(
+        loaded.refresh_interval_secs,
+        Settings::default().refresh_interval_secs
+    );
+    assert_eq!(
+        std::fs::read(path).expect("live file"),
+        original,
+        "the unlocked path must leave the live file in place"
+    );
+    assert!(
+        !Settings::backup_path(path).exists(),
+        "the unlocked path must not create a backup"
+    );
+}
+
+fn assert_read_failure_quarantines_when_locked(path: &std::path::Path, original: &[u8]) {
+    let (loaded, pending_quarantine) = Settings::read_path(path, true);
+    assert!(
+        !pending_quarantine,
+        "a locked read failure quarantines immediately"
+    );
+    assert_eq!(
+        loaded.refresh_interval_secs,
+        Settings::default().refresh_interval_secs
+    );
+    assert!(
+        !path.exists(),
+        "the live path must be vacated so a later save cannot clobber the original"
+    );
+    assert_eq!(
+        std::fs::read(Settings::backup_path(path)).expect("read backup"),
+        original
+    );
+}
+
+#[test]
+fn unsupported_secure_file_version_is_not_treated_as_empty_defaults() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let original = unsupported_protected_settings();
+    std::fs::write(&path, &original).expect("write unsupported ProtectedFile");
+
+    crate::secure_file::read_string(&path).expect_err("fixture must fail read_string");
+    assert_read_failure_is_pending_when_unlocked(&path, original.as_bytes());
+    assert_read_failure_quarantines_when_locked(&path, original.as_bytes());
+}
+
+#[test]
+fn dpapi_unprotect_failure_is_not_treated_as_empty_defaults() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let original = dpapi_protected_settings();
+    std::fs::write(&path, &original).expect("write undecryptable ProtectedFile");
+
+    crate::secure_file::read_string(&path).expect_err("fixture must fail read_string");
+    assert_read_failure_is_pending_when_unlocked(&path, original.as_bytes());
+    assert_read_failure_quarantines_when_locked(&path, original.as_bytes());
+}
+
+#[test]
+fn io_failure_on_existing_settings_is_not_treated_as_empty_defaults() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let original = b"\xff\xfe{not-utf8".to_vec();
+    std::fs::write(&path, &original).expect("write invalid UTF-8");
+
+    crate::secure_file::read_string(&path).expect_err("fixture must fail read_string");
+    assert_read_failure_is_pending_when_unlocked(&path, &original);
+    assert_read_failure_quarantines_when_locked(&path, &original);
+}
+
+/// Without the SBS-1074 quarantine, this write replaces the live undecodable
+/// bytes and leaves no `.bak`.
+#[test]
+fn try_update_does_not_wipe_an_undecodable_settings_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let original = unsupported_protected_settings();
+    std::fs::write(&path, &original).expect("write unsupported ProtectedFile");
+
+    try_update_write_at(&path);
+
+    assert_eq!(
+        std::fs::read_to_string(Settings::backup_path(&path)).expect("quarantined original"),
+        original,
+        "try_update must move the undecodable file aside instead of overwriting it"
+    );
+    let live = crate::secure_file::read_string(&path).expect("defaults written to vacated path");
+    let written: Settings = serde_json::from_str(&live).expect("written settings parse");
+    assert_eq!(
+        written.refresh_interval_secs,
+        Settings::default().refresh_interval_secs
+    );
+}
+
 /// SBS-964: a privacy-conscious reader who leaves incident badges off still
 /// sees models.dev and GitHub traffic. Claiming the badge is the only
 /// non-provider outbound request is false; the copy has to name those hosts.
