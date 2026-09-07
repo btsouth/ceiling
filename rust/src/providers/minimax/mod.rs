@@ -313,18 +313,24 @@ impl MiniMaxProvider {
             .get("used_amount")
             .or_else(|| json.get("total_amount"))
             .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
+            .ok_or_else(|| {
+                ProviderError::Parse("MiniMax usage response has no used reading".to_string())
+            })?;
 
         let credit_limit = json
             .get("total_quota")
             .or_else(|| json.get("quota"))
             .and_then(|v| v.as_f64())
-            .unwrap_or(100.0);
+            .ok_or_else(|| {
+                ProviderError::Parse("MiniMax usage response has no quota reading".to_string())
+            })?;
 
         let used_percent = if credit_limit > 0.0 {
             (used_credits / credit_limit) * 100.0
         } else {
-            0.0
+            return Err(ProviderError::Parse(
+                "MiniMax usage response has a non-positive quota".to_string(),
+            ));
         };
 
         let plan = json
@@ -402,15 +408,20 @@ impl MiniMaxProvider {
             .map(|p| p.join("config.json").exists())
             .unwrap_or(false);
 
-        if has_env_vars || has_config {
-            let usage =
-                UsageSnapshot::new(RateWindow::new(0.0)).with_login_method("MiniMax (configured)");
-            Ok(usage)
-        } else {
-            Err(ProviderError::NotInstalled(
-                "MiniMax API not configured. Set MINIMAX_API_KEY and MINIMAX_GROUP_ID environment variables".to_string()
-            ))
-        }
+        usage_from_configured_probe(has_env_vars || has_config)
+    }
+}
+
+/// Auto used to fall through here and mint 0% when the fetch failed (SBS-1061).
+fn usage_from_configured_probe(configured: bool) -> Result<UsageSnapshot, ProviderError> {
+    if configured {
+        Err(ProviderError::Other(
+            "MiniMax is configured, but usage could not be fetched".to_string(),
+        ))
+    } else {
+        Err(ProviderError::NotInstalled(
+            "MiniMax API not configured. Set MINIMAX_API_KEY and MINIMAX_GROUP_ID environment variables".to_string()
+        ))
     }
 }
 
@@ -851,6 +862,41 @@ mod tests {
                 .iter()
                 .any(|window| window.id == "billing-tokens-30d")
         );
+    }
+
+    fn assert_failure_is_not_zero_percent(result: Result<UsageSnapshot, ProviderError>) {
+        if let Ok(usage) = result {
+            panic!(
+                "failure must not be reported as {}% used",
+                usage.primary.used_percent
+            );
+        }
+    }
+
+    /// SBS-1061: a payload with no used/quota used to become 0% of a guessed 100.
+    #[test]
+    fn missing_usage_fields_are_not_reported_as_zero_percent() {
+        let provider = MiniMaxProvider::new();
+        assert_failure_is_not_zero_percent(provider.parse_usage_response(&serde_json::json!({
+            "base_resp": { "status_code": 0 },
+            "plan_name": "MiniMax Star"
+        })));
+        let err = provider
+            .parse_usage_response(&serde_json::json!({
+                "base_resp": { "status_code": 0 }
+            }))
+            .expect_err("missing used/quota is a decode failure");
+        assert!(
+            matches!(err, ProviderError::Parse(_)),
+            "missing fields must stay Parse, got {err:?}"
+        );
+    }
+
+    /// SBS-1061: Auto fell through to "configured → 0%" after a failed fetch.
+    #[test]
+    fn configured_probe_is_not_reported_as_zero_percent() {
+        assert_failure_is_not_zero_percent(usage_from_configured_probe(true));
+        assert_failure_is_not_zero_percent(usage_from_configured_probe(false));
     }
 
     #[test]

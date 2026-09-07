@@ -351,6 +351,11 @@ const PINNED_COMPANION_IDS: Record<string, string[]> = {
  * Clicking never toggles meters — detail mode lists every window.
  */
 export function glanceMeters(provider: ProviderUsageSnapshot): GlanceMeters {
+  // Fetch/decode failure is an error snapshot whose primary is a dummy 0%.
+  // Overview must not paint that as empty/healthy (SBS-1061).
+  if (provider.error) {
+    return { primary: null, companions: [] };
+  }
   const named = primaryNamedState(provider);
   const primary = named ? null : primaryConstrainingWindow(provider);
 
@@ -478,6 +483,9 @@ export function bankedResetCredits(
 export function allMeasuredWindows(
   provider: ProviderUsageSnapshot,
 ): ConstrainingWindow[] {
+  if (provider.error) {
+    return [];
+  }
   // A placeholder primary is not a reading — Activity must not list a fake
   // 0% Plan (SBS-876).
   if (primaryNamedState(provider)) {

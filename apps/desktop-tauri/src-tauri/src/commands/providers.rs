@@ -730,6 +730,11 @@ fn persist_widget_snapshot_from_cache(
 fn widget_entry_from_usage_snapshot(
     snap: &ProviderUsageSnapshot,
 ) -> Option<codexbar::core::WidgetProviderEntry> {
+    // from_error fills primary with a dummy 0%. MCP/statusline must not
+    // publish that as remaining quota (SBS-1061).
+    if snap.error.is_some() {
+        return None;
+    }
     let provider = ProviderId::from_cli_name(&snap.provider_id)?;
     let updated_at = chrono::DateTime::parse_from_rfc3339(&snap.updated_at)
         .ok()
@@ -1661,6 +1666,34 @@ mod widget_snapshot_tests {
 
         let entry = widget_entry_from_usage_snapshot(&snap).expect("entry");
         assert!(entry.primary.is_none());
+    }
+
+    /// SBS-1061: from_error still carries a dummy 0% primary. MCP/statusline
+    /// must not publish that as a reading.
+    #[test]
+    fn widget_snapshot_omits_an_errored_vertex_zero_percent() {
+        let metadata = instantiate_provider(ProviderId::VertexAI)
+            .metadata()
+            .clone();
+        let snap = ProviderUsageSnapshot::from_error(
+            ProviderId::VertexAI,
+            &metadata,
+            "Vertex AI Resource Manager request failed: HTTP 500".to_string(),
+        );
+        assert!(snap.error.is_some());
+        assert_eq!(snap.primary.used_percent, 0.0);
+
+        assert!(
+            most_constrained_per_provider(std::slice::from_ref(&snap)).is_empty(),
+            "errored Vertex must not win a widget/MCP slot"
+        );
+        // If ranking ever included it, the entry writer still must not emit 0%.
+        if let Some(entry) = widget_entry_from_usage_snapshot(&snap) {
+            panic!(
+                "errored Vertex must not become a widget entry (primary {:?})",
+                entry.primary.as_ref().map(|w| w.used_percent)
+            );
+        }
     }
 
     #[test]
