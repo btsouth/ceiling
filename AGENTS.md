@@ -60,17 +60,22 @@
 
 ## Release & Winget Notes
 - Treat Winget updates as a normal release step after GitHub release artifacts are stable.
-- Winget does not track "latest" GitHub releases; every version needs its own immutable manifest folder in
-  `microsoft/winget-pkgs`, for example `manifests/f/Finesssee/Win-CodexBar/0.23.6/`.
+- Ceiling's Winget identity is `tsouth89.Ceiling`, with manifest folders under
+  `microsoft/winget-pkgs/manifests/t/tsouth89/Ceiling/`. Do not confuse it with `Finesssee.Win-CodexBar`,
+  which tracks a different project (`nesszer/Win-CodexBar`) despite the shared lineage.
+- Winget does not track "latest" GitHub releases; every version needs its own immutable manifest folder,
+  for example `manifests/t/tsouth89/Ceiling/1.5.37/`.
 - For routine version bumps, copy the previous approved manifest folder and change only version-specific fields:
-  `PackageVersion`, `InstallerUrl`, `InstallerSha256`, `DisplayName`, `DisplayVersion`, `ReleaseNotes`, and
-  `ReleaseNotesUrl`.
+  `PackageVersion`, `InstallerUrl`, `InstallerSha256`, `DisplayName`, `DisplayVersion`, `ReleaseDate`,
+  `ReleaseNotes`, and `ReleaseNotesUrl`.
 - Keep stable package identity and installer behavior unchanged unless there is a real packaging reason:
   `PackageIdentifier`, `InstallerType`, `Scope`, `ProductCode`, `Publisher`, package URLs, and silent install behavior.
 - Before opening a Winget PR, verify the release installer URL resolves and recompute the SHA-256 from the downloaded
-  asset. On Windows, run `winget validate` when available.
-- The first Winget package submission was approved in `microsoft/winget-pkgs#366653`; the v0.23.5 update was approved
-  in `microsoft/winget-pkgs#366794`. Future updates should be faster, but still expect Microsoft validation/review.
+  asset (the release's `.sha256` sidecar is a convenient cross-check). On Windows, run `winget validate` when available;
+  from Linux note the skip in the PR body.
+- Package history: the package was first approved as `microsoft/winget-pkgs#411757` (1.5.22), and recent updates
+  shipped as `#414311` (1.5.25), `#416061` (1.5.29), and `#423050` (1.5.36). Expect Microsoft validation/review lag
+  on every update.
 
 ## Agent Notes
 - The default desktop app is the Tauri shell in `apps/desktop-tauri/`. The Rust crate owns shared backend logic
