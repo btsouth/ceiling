@@ -220,6 +220,7 @@ export interface SettingsSnapshot {
   enabledProviders: string[];
   providerOrder?: string[];
   refreshIntervalSecs: number;
+  /** Legacy compatibility field; opening a tray/menu surface does not force-refresh. */
   refreshAllProvidersOnMenuOpen: boolean;
   startAtLogin: boolean;
   startMinimized: boolean;

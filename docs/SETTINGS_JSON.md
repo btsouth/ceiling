@@ -13,7 +13,7 @@ fields marked safe, but Ceiling may overwrite the file when the app exits.
 |---|---|---|---|
 | `enabled_providers` | array of strings | `["claude","codex","cursor","grok"]` | Provider CLI names to monitor. Safe to edit. |
 | `refresh_interval_secs` | number | `300` | `0` means manual refresh only. Safe to edit. |
-| `refresh_all_providers_on_menu_open` | boolean | `false` | Force-refresh when a tray/menu surface opens. Safe to edit. |
+| `refresh_all_providers_on_menu_open` | boolean | `false` | Legacy compatibility field. Nothing reads this flag — opening a tray/menu surface does not force-refresh. Leave it unchanged. |
 | `start_minimized` | boolean | `false` | Start minimized. Safe to edit. |
 | `start_at_login` | boolean | `false` | Start at Windows sign-in. Safe to edit. |
 | `show_notifications` | boolean | `true` | Show usage notifications. Safe to edit. |
