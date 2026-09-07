@@ -1,4 +1,4 @@
-const REPO = "tsouth89/ceiling";
+const REPO = "btsouth/ceiling";
 const CACHE_SECONDS = 300;
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7;
 const SESSION_MESSAGE = "ceiling-admin-session-v1";

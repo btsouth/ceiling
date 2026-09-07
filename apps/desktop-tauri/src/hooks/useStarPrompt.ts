@@ -10,7 +10,7 @@ import {
 } from "../lib/starPrompt";
 import type { ProviderUsageSnapshot } from "../types/bridge";
 
-const REPO_URL = "https://github.com/tsouth89/ceiling";
+const REPO_URL = "https://github.com/btsouth/ceiling";
 
 /** How often the settle timer is re-checked. Coarse on purpose; nothing here is urgent. */
 const TICK_MS = 5_000;

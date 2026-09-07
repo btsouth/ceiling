@@ -23,4 +23,4 @@
 
 Covers everything since the last published release (**1.5.6**), including draft tags that were never published (1.5.7–1.5.9).
 
-**Full Changelog**: https://github.com/tsouth89/ceiling/compare/v1.5.6...v1.5.10
+**Full Changelog**: https://github.com/btsouth/ceiling/compare/v1.5.6...v1.5.10

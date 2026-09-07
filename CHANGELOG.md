@@ -2,11 +2,18 @@
 
 ## [Ceiling] Unreleased
 
+## [Ceiling] 1.5.36 - 2026-08-23
+
+This release closes out the current maintenance queue with safer local state, more accurate usage and cost reporting, and better behavior across the desktop, CLI, and MCP server. It also adds multi-account CLI usage, restores detached Settings window geometry, and strengthens accessibility regression coverage.
+
+The Windows server token now rotates after unsafe exposure. Concurrent and corrupt settings files fail safely, startup ownership is respected, refresh intervals work as configured, and account or quota views no longer substitute misleading data.
+
 ### Security
 - **A leaked `serve.token` is rotated on Windows, not just Unix.** After SBS-953, a world-readable token was replaced on Unix, but Windows still tightened the DACL and reused the same secret. The ACL is now inspected before tightening; if anyone other than the current user, SYSTEM, or Administrators can read the file, the token is replaced. Closes SBS-1043.
 
 ### Fixed
 - **MCP `get_status` now ranks Cursor the way the strip does.** After SBS-1055, `remaining_percent` used generic exhausted-first ranking over primary/secondary/tertiary, so a hotter Plan could hide Auto, and the widget snapshot still omitted `cursor-api` / on-demand while the docs claimed strip parity. Cursor now uses `cursorStripWindow` (hottest Auto/API with room, then on-demand, Plan last), those extras persist on the snapshot, and the multi-account seat picker compares the same window. Closes SBS-1076.
+- **Timed-out Kiro, Augment, and Vertex CLI fetches no longer leave orphaned children.** Those providers spawned `tokio::process::Command` without `kill_on_drop`, so a desktop refresh timeout dropped the `Child` and the CLI kept running. Fetch-path commands now kill on cancel; Augment's inner 15s deadline also kill+waits like `command_runner`. Closes SBS-1078.
 - **Frontend tests now catch accessibility regressions automatically.** A shared axe assertion checks representative quota cards, mini charts, and update banners in the existing Frontend CI job. Color contrast remains outside jsdom coverage because it requires a rendered browser. Fixes #222.
 - **`usage --all-accounts` now fetches every configured Codex and Claude account.** Account fetches run with bounded concurrency, preserve configured order, and report failures independently. Text and JSON identify each configured account while the default output remains unchanged. Fixes #274.
 - **The detached Settings window now reopens where you left it.** Its saved size and position are restored and clamped on screen instead of being overwritten by a second frontend resize on every open. Closes #275.

@@ -31,4 +31,4 @@ Gemini no longer renders as an empty ring on the native taskbar strip (it had no
 
 Patch on **1.5.11**.
 
-**Full Changelog**: https://github.com/tsouth89/ceiling/compare/v1.5.11...v1.5.12
+**Full Changelog**: https://github.com/btsouth/ceiling/compare/v1.5.11...v1.5.12

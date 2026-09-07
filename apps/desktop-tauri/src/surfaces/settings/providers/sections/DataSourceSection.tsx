@@ -4,7 +4,7 @@ import { openExternalUrl } from "../../../../lib/tauri";
 import { providerProvenanceKey } from "../../../../lib/providerProvenance";
 
 const DATA_SOURCES_DOC_URL =
-  "https://github.com/tsouth89/ceiling/blob/main/docs/DATA_SOURCES.md";
+  "https://github.com/btsouth/ceiling/blob/main/docs/DATA_SOURCES.md";
 
 interface Props {
   provider: ProviderDetail;

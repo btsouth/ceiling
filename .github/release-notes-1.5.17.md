@@ -38,4 +38,4 @@ Claude and Codex now have in-app login flows next to the existing Copilot device
 
 ---
 
-**Full Changelog**: https://github.com/tsouth89/ceiling/compare/v1.5.16...v1.5.17
+**Full Changelog**: https://github.com/btsouth/ceiling/compare/v1.5.16...v1.5.17

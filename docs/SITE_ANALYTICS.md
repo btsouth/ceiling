@@ -34,7 +34,7 @@ Set these Worker variables in the Cloudflare dashboard, or add non-secret values
 | --- | --- |
 | `POSTHOG_QUERY_HOST` | Optional. Defaults to `https://us.posthog.com`. |
 | `POSTHOG_CAPTURE_HOST` | Optional. Defaults to `https://us.i.posthog.com`. |
-| `GITHUB_REPO` | Optional. Defaults to `tsouth89/ceiling`. |
+| `GITHUB_REPO` | Optional. Defaults to `btsouth/ceiling`. |
 
 Production currently uses the shared SouthForge PostHog project (`493711`) with a pinned [Ceiling dashboard](https://us.posthog.com/project/493711/dashboard/1846024). Ceiling events and queries are isolated with `$host = 'ceiling.win'` and `source = 'ceiling.win'`; Toolport events remain separate. `POSTHOG_PUBLIC_KEY` is the project's `phc_...` capture key. `POSTHOG_QUERY_KEY` is a personal `phx_...` API key with Query Read access to the project.
 

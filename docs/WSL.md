@@ -6,7 +6,7 @@ requires [WSLg](https://github.com/microsoft/wslg) (Windows 11, build 22000+).
 ## Quick Start
 
 ```bash
-git clone https://github.com/tsouth89/ceiling.git
+git clone https://github.com/btsouth/ceiling.git
 cd ceiling
 ./scripts/dev.sh
 ```

@@ -144,7 +144,7 @@ describe("useStarPrompt", () => {
     });
     expect(currentReason()).toBe("none");
     expect(tauriMocks.openExternalUrl).toHaveBeenCalledWith(
-      "https://github.com/tsouth89/ceiling",
+      "https://github.com/btsouth/ceiling",
     );
     expect(readStarPromptState().starred).toBe(true);
   });

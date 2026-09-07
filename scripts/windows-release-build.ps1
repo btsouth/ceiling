@@ -59,7 +59,7 @@
 
 param(
     [string]$Ref = "HEAD",
-    [string]$RepoUrl = "https://github.com/tsouth89/ceiling.git",
+    [string]$RepoUrl = "https://github.com/btsouth/ceiling.git",
     [string]$WorkRoot = "C:\code\Ceiling-release",
     [switch]$RefreshInstallerDependencies,
     [switch]$WarmCacheOnly,

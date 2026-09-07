@@ -109,53 +109,11 @@ impl AmpProvider {
             .await
             .map_err(|e| ProviderError::Parse(e.to_string()))?;
 
-        self.parse_usage_response(&json)
+        usage_from_amp_payload(&json)
     }
 
-    fn parse_usage_response(
-        &self,
-        json: &serde_json::Value,
-    ) -> Result<UsageSnapshot, ProviderError> {
-        // Parse Sourcegraph/Amp usage response
-        let used = json
-            .get("completionsUsed")
-            .or_else(|| json.get("used"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(0.0);
-
-        let limit = json
-            .get("completionsLimit")
-            .or_else(|| json.get("limit"))
-            .and_then(|v| v.as_f64())
-            .unwrap_or(500.0);
-
-        let used_percent = if limit > 0.0 {
-            (used / limit) * 100.0
-        } else {
-            0.0
-        };
-
-        let plan = json
-            .get("plan")
-            .or_else(|| json.get("tier"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("Pro");
-
-        let reset_time = json
-            .get("resetAt")
-            .or_else(|| json.get("periodEnd"))
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        let primary_window = RateWindow::with_details(used_percent, None, None, reset_time);
-        let usage = UsageSnapshot::new(primary_window).with_login_method(plan);
-
-        Ok(usage)
-    }
-
-    /// Probe for Amp installation
+    /// Probe for Amp installation. Configured credentials are not a usage reading.
     async fn probe_cli(&self, ctx: &FetchContext) -> Result<UsageSnapshot, ProviderError> {
-        // Check ctx.api_key first
         let has_api_key = ctx.api_key.as_ref().map(|k| !k.is_empty()).unwrap_or(false);
 
         let has_env =
@@ -169,16 +127,63 @@ impl AmpProvider {
             .map(|p| p.join("config.json").exists())
             .unwrap_or(false);
 
-        if has_api_key || has_env || has_amp_config || has_cody_config {
-            let usage =
-                UsageSnapshot::new(RateWindow::new(0.0)).with_login_method("Amp (configured)");
-            Ok(usage)
-        } else {
-            Err(ProviderError::NotInstalled(
-                "Amp not configured. Set SRC_ACCESS_TOKEN environment variable or configure Amp."
-                    .to_string(),
-            ))
-        }
+        usage_from_configured_probe(has_api_key || has_env || has_amp_config || has_cody_config)
+    }
+}
+
+/// Amp JSON without used/limit is a decode miss, not 0% (SBS-1061).
+fn usage_from_amp_payload(json: &serde_json::Value) -> Result<UsageSnapshot, ProviderError> {
+    let used = json
+        .get("completionsUsed")
+        .or_else(|| json.get("used"))
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| {
+            ProviderError::Parse("Amp usage response has no used reading".to_string())
+        })?;
+
+    let limit = json
+        .get("completionsLimit")
+        .or_else(|| json.get("limit"))
+        .and_then(|v| v.as_f64())
+        .ok_or_else(|| {
+            ProviderError::Parse("Amp usage response has no limit reading".to_string())
+        })?;
+
+    let used_percent = if limit > 0.0 {
+        (used / limit) * 100.0
+    } else {
+        return Err(ProviderError::Parse(
+            "Amp usage response has a non-positive limit".to_string(),
+        ));
+    };
+
+    let plan = json
+        .get("plan")
+        .or_else(|| json.get("tier"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("Pro");
+
+    let reset_time = json
+        .get("resetAt")
+        .or_else(|| json.get("periodEnd"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+
+    let primary_window = RateWindow::with_details(used_percent, None, None, reset_time);
+    Ok(UsageSnapshot::new(primary_window).with_login_method(plan))
+}
+
+/// Auto used to fall through here and mint 0% when the fetch failed (SBS-1061).
+fn usage_from_configured_probe(configured: bool) -> Result<UsageSnapshot, ProviderError> {
+    if configured {
+        Err(ProviderError::Other(
+            "Amp is configured, but usage could not be fetched".to_string(),
+        ))
+    } else {
+        Err(ProviderError::NotInstalled(
+            "Amp not configured. Set SRC_ACCESS_TOKEN environment variable or configure Amp."
+                .to_string(),
+        ))
     }
 }
 
@@ -270,5 +275,49 @@ mod tests {
             AmpProvider::new().metadata().dashboard_url,
             Some("https://ampcode.com/settings/usage")
         );
+    }
+
+    fn assert_failure_is_not_zero_percent(result: Result<UsageSnapshot, ProviderError>) {
+        if let Ok(usage) = result {
+            panic!(
+                "failure must not be reported as {}% used",
+                usage.primary.used_percent
+            );
+        }
+    }
+
+    /// SBS-1061: a payload with no used/limit used to become 0% of a guessed 500.
+    #[test]
+    fn missing_usage_fields_are_not_reported_as_zero_percent() {
+        assert_failure_is_not_zero_percent(usage_from_amp_payload(&serde_json::json!({})));
+        assert_failure_is_not_zero_percent(usage_from_amp_payload(&serde_json::json!({
+            "plan": "Pro"
+        })));
+        let err = usage_from_amp_payload(&serde_json::json!({}))
+            .expect_err("missing used/limit is a decode failure");
+        assert!(
+            matches!(err, ProviderError::Parse(_)),
+            "missing fields must stay Parse, got {err:?}"
+        );
+    }
+
+    /// A real 0/500 reading is still 0%. The bug is inventing that from absence.
+    #[test]
+    fn reported_zero_used_is_a_reading() {
+        let usage = usage_from_amp_payload(&serde_json::json!({
+            "used": 0.0,
+            "limit": 500.0,
+            "plan": "Pro"
+        }))
+        .expect("explicit zero is a reading");
+        assert_eq!(usage.primary.used_percent, 0.0);
+        assert_eq!(usage.login_method.as_deref(), Some("Pro"));
+    }
+
+    /// SBS-1061: Auto fell through to "configured → 0%" after a failed fetch.
+    #[test]
+    fn configured_probe_is_not_reported_as_zero_percent() {
+        assert_failure_is_not_zero_percent(usage_from_configured_probe(true));
+        assert_failure_is_not_zero_percent(usage_from_configured_probe(false));
     }
 }

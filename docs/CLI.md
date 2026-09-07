@@ -148,6 +148,50 @@ TOKEN="$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/Ceiling/serve.token")"
 curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/usage
 ```
 
+### HTTP endpoints
+
+The server binds to `127.0.0.1` only and additionally rejects any request whose `Host` header is not local (`127.0.0.1`, `localhost`, or `[::1]`), so it is not reachable from other machines. It is read-only: every route answers `GET` and no route mutates usage or account data (successful `/usage` and `/cost` responses do update the response cache described under `--refresh-interval`). `/usage` and `/cost` require the bearer token described above unless `--allow-unauthenticated` is set; `/health` never requires it.
+
+| Route | Description |
+|---|---|
+| `GET /health` | Liveness check with the server version. Unauthenticated. |
+| `GET /usage` | Usage snapshot per provider. Optional `provider` query param. |
+| `GET /cost` | Local token-cost scan per provider. Optional `provider` query param. |
+
+The `provider` query parameter accepts a provider CLI name (for example `claude` or `codex`), `both` (Codex and Claude), or `all` (every provider). When omitted, the providers enabled in Settings are queried.
+
+`/usage` and `/cost` return a JSON array with one object per requested provider. A provider that fails to fetch reports an error inside its own array entry — the HTTP status is still `200` — and without `--include-identity` that error text is normalized to `"provider request failed"`. `/cost` reads local session logs and supports only Claude, Codex, and Grok; any other provider's entry has `"supported": false`. The scan window is fixed at 30 days (the `cost` subcommand's `--days` flag does not apply here).
+
+Error responses are JSON of the shape `{ "error": "<message>" }`; the `409` additionally carries a `"code"` field:
+
+| Status | When |
+|---|---|
+| `400` | Malformed request, missing or duplicate `Host` header, or unknown `provider` value. |
+| `401` | Missing or wrong bearer token on `/usage` or `/cost`. |
+| `403` | Non-local `Host` header. |
+| `404` | Unknown path. |
+| `405` | Any method other than `GET`. |
+| `409` | Default provider selection while no providers are enabled (`"code": "no_enabled_providers"`). |
+| `503` | More than 8 concurrent connections. |
+
+Examples (`$TOKEN` as read in the example above):
+
+```sh
+curl http://127.0.0.1:8080/health
+# {"status":"ok","version":"1.5.36"}
+
+curl -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8080/cost?provider=claude"
+# [{"by_model":{...},"cost":{"currency":"USD","total_usd":42.13},
+#   "days_scanned":30,"provider":"claude","sessions_count":57,
+#   "supported":true,
+#   "tokens":{"cached":345678,"input":1234567,"output":89012}}]
+
+curl -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:8080/usage?provider=all"
+# [{"provider":"claude","source":"web","usage":{...},"cost":{...}},
+#  {"provider":"codex","source":"cli","usage":{...},"cost":{...}},
+#  ...]
+```
+
 ## `statusline`
 
 Print one compact usage line for an editor status bar. Cache-only.

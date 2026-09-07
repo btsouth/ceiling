@@ -16,4 +16,4 @@ Pin which Codex or Claude seat drives each strip tile (Settings → Taskbar). Th
 
 ---
 
-**Full Changelog**: https://github.com/tsouth89/ceiling/compare/v1.5.6...v1.5.7
+**Full Changelog**: https://github.com/btsouth/ceiling/compare/v1.5.6...v1.5.7

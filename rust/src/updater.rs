@@ -10,7 +10,7 @@ use tokio::sync::watch;
 #[cfg(target_os = "windows")]
 mod signature;
 
-const GITHUB_REPO: &str = "tsouth89/ceiling";
+const GITHUB_REPO: &str = "btsouth/ceiling";
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// State of the update download process
@@ -1037,7 +1037,7 @@ mod tests {
         format!(
             r#"{{
                 "tag_name": "{tag}",
-                "html_url": "https://github.com/tsouth89/ceiling/releases/tag/{tag}",
+                "html_url": "https://github.com/btsouth/ceiling/releases/tag/{tag}",
                 "body": "notes",
                 "assets": [],
                 "draft": false,
@@ -1139,7 +1139,7 @@ mod tests {
     fn prefers_installer_asset_for_auto_update() {
         let release = GitHubRelease {
             tag_name: "v1.2.6".to_string(),
-            html_url: "https://github.com/tsouth89/ceiling/releases/tag/v1.2.6".to_string(),
+            html_url: "https://github.com/btsouth/ceiling/releases/tag/v1.2.6".to_string(),
             body: None,
             assets: vec![
                 GitHubAsset {
@@ -1211,7 +1211,7 @@ mod tests {
     fn falls_back_to_manual_release_when_only_portable_exe_exists() {
         let release = GitHubRelease {
             tag_name: "v1.2.6".to_string(),
-            html_url: "https://github.com/tsouth89/ceiling/releases/tag/v1.2.6".to_string(),
+            html_url: "https://github.com/btsouth/ceiling/releases/tag/v1.2.6".to_string(),
             body: None,
             assets: vec![GitHubAsset {
                 name: "Ceiling-1.2.6-portable.exe".to_string(),
@@ -1226,7 +1226,7 @@ mod tests {
 
         assert_eq!(
             update.download_url,
-            "https://github.com/tsouth89/ceiling/releases/tag/v1.2.6"
+            "https://github.com/btsouth/ceiling/releases/tag/v1.2.6"
         );
         assert!(!update.supports_auto_apply());
     }
