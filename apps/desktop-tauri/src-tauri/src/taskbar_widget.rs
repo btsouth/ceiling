@@ -190,7 +190,10 @@ fn strip_readout_percent(readout: &ConstrainingReadout<'_>, show_as_used: bool) 
     Some(value.clamp(0.0, 100.0).round() as u8)
 }
 
-fn strip_heat(snapshot: &crate::commands::ProviderUsageSnapshot) -> f64 {
+fn strip_heat(
+    snapshot: &crate::commands::ProviderUsageSnapshot,
+    preference: codexbar::settings::MetricPreference,
+) -> f64 {
     // Account ranking runs before `widget_model` drops errored snapshots, so a
     // failed account must rank below a named state or it wins the tile and then
     // has no readout to paint - an em dash where "Unavailable" was available
@@ -198,7 +201,9 @@ fn strip_heat(snapshot: &crate::commands::ProviderUsageSnapshot) -> f64 {
     if snapshot.error.is_some() {
         return f64::NEG_INFINITY;
     }
-    let readout = constraining_readout(snapshot);
+    // Rank by the window the tile will actually show, so a pinned Glance
+    // metric picks the account that is hottest on that window (#411).
+    let readout = preferred_readout(snapshot, preference);
     if readout.named_state.is_some() {
         return -1.0;
     }
@@ -405,7 +410,6 @@ fn constraining_readout(
     if snapshot.provider_id == "cursor" {
         return cursor_strip_readout(snapshot);
     }
-
     let mut best = ConstrainingReadout {
         label: snapshot.primary_label.as_deref(),
         window: &snapshot.primary,
@@ -466,6 +470,48 @@ fn constraining_readout(
     best
 }
 
+/// Readout honoring the provider's Glance metric preference (#411).
+///
+/// `Automatic` keeps the constraining-window ranking above. A pinned
+/// preference shows that window when the provider reports it and falls back to
+/// the automatic choice when it does not, so a missing lane never blanks a
+/// tile. ExtraUsage / Average / Credits have no single window a percentage
+/// tile can show, so they keep the automatic ranking too.
+fn preferred_readout<'a>(
+    snapshot: &'a crate::commands::ProviderUsageSnapshot,
+    preference: codexbar::settings::MetricPreference,
+) -> ConstrainingReadout<'a> {
+    match preference {
+        codexbar::settings::MetricPreference::Session => ConstrainingReadout {
+            label: snapshot.primary_label.as_deref(),
+            window: &snapshot.primary,
+            amount: None,
+            named_state: primary_named_state(snapshot),
+        },
+        codexbar::settings::MetricPreference::Weekly => snapshot
+            .secondary
+            .as_ref()
+            .map(|window| ConstrainingReadout::new(snapshot.secondary_label.as_deref(), window))
+            .unwrap_or_else(|| constraining_readout(snapshot)),
+        codexbar::settings::MetricPreference::Model => snapshot
+            .model_specific
+            .as_ref()
+            .map(|window| ConstrainingReadout::new(Some("Model"), window))
+            .unwrap_or_else(|| constraining_readout(snapshot)),
+        codexbar::settings::MetricPreference::Tertiary => snapshot
+            .tertiary
+            .as_ref()
+            .map(|window| {
+                ConstrainingReadout::new(
+                    snapshot.tertiary_label.as_deref().or(Some("Extra")),
+                    window,
+                )
+            })
+            .unwrap_or_else(|| constraining_readout(snapshot)),
+        _ => constraining_readout(snapshot),
+    }
+}
+
 /// Pick the reading to show on a one-tile-per-provider strip.
 ///
 /// When `preferred_account_id` is set and that account is in the cache, use it.
@@ -475,6 +521,7 @@ fn select_strip_snapshot<'a, I>(
     cache: I,
     provider_id: &str,
     preferred_account_id: Option<&str>,
+    preference: codexbar::settings::MetricPreference,
 ) -> Option<&'a crate::commands::ProviderUsageSnapshot>
 where
     I: IntoIterator<Item = &'a crate::commands::ProviderUsageSnapshot>,
@@ -496,8 +543,8 @@ where
         return Some(*hit);
     }
     candidates.into_iter().max_by(|a, b| {
-        strip_heat(a)
-            .total_cmp(&strip_heat(b))
+        strip_heat(a, preference)
+            .total_cmp(&strip_heat(b, preference))
             .then_with(|| b.account_id.cmp(&a.account_id))
     })
 }
@@ -1229,17 +1276,24 @@ mod windows_host {
                 // its limit (stable across fetch order). Users can pin a
                 // specific Codex/Claude account in Settings → Taskbar Usage.
                 let preferred = settings.taskbar_account_for(&provider_id);
+                // The Glance metric drives which window the tile shows, so the
+                // account ranking uses the same window (#411).
+                let preference = codexbar::core::ProviderId::from_cli_name(&provider_id)
+                    .map(|id| settings.get_provider_metric(id))
+                    .unwrap_or_default();
                 let snapshot = super::select_strip_snapshot(
                     guard.provider_cache.iter(),
                     &provider_id,
                     preferred,
+                    preference,
                 );
                 // One-number strip: surface the constraining window, not always
                 // the primary session. Claude weekly at 100% with a fresh 5h
-                // session must read as Weekly / 100%, not 5h / 0%.
+                // session must read as Weekly / 100%, not 5h / 0%. A pinned
+                // Glance metric overrides the ranking (#411).
                 let constraining = snapshot
                     .filter(|snapshot| snapshot.error.is_none())
-                    .map(super::constraining_readout);
+                    .map(|snapshot| super::preferred_readout(snapshot, preference));
                 let percent = constraining
                     .and_then(|readout| strip_readout_percent(&readout, settings.show_as_used));
                 // A spend lane's headline is the money, not the fraction.
@@ -3298,8 +3352,84 @@ mod tests {
             snap("codex", Some("personal"), 20.0),
             snap("codex", Some("work"), 80.0),
         ];
-        let picked = select_strip_snapshot(cache.iter(), "codex", None).unwrap();
+        let picked = select_strip_snapshot(
+            cache.iter(),
+            "codex",
+            None,
+            codexbar::settings::MetricPreference::Automatic,
+        )
+        .unwrap();
         assert_eq!(picked.account_id.as_deref(), Some("work"));
+    }
+
+    /// Claude snapshot with independent Session (primary) and Weekly
+    /// (secondary) readings, for Glance metric tests.
+    fn claude_session_weekly_snap(
+        account_id: Option<&str>,
+        session: f64,
+        weekly: f64,
+    ) -> crate::commands::ProviderUsageSnapshot {
+        let mut snapshot = snap("claude", account_id, session);
+        snapshot.secondary = Some(rate_window(weekly, Some(10_080)));
+        snapshot.secondary_label = Some("Weekly".into());
+        snapshot
+    }
+
+    /// #411: a pinned Glance metric must drive the tile. Session shows the
+    /// primary window even when the constraining ranking would pick Weekly.
+    #[test]
+    fn glance_metric_session_pins_the_primary_window() {
+        let snapshot = claude_session_weekly_snap(Some("personal"), 10.0, 95.0);
+        let readout =
+            super::preferred_readout(&snapshot, codexbar::settings::MetricPreference::Session);
+        assert_eq!(readout.label, Some("Session"));
+        assert_eq!(readout.window.used_percent, 10.0);
+    }
+
+    #[test]
+    fn glance_metric_weekly_pins_the_secondary_window() {
+        let snapshot = claude_session_weekly_snap(Some("personal"), 80.0, 5.0);
+        let readout =
+            super::preferred_readout(&snapshot, codexbar::settings::MetricPreference::Weekly);
+        assert_eq!(readout.label, Some("Weekly"));
+        assert_eq!(readout.window.used_percent, 5.0);
+    }
+
+    /// A pinned metric falls back to the automatic choice when the provider
+    /// does not report that lane, so the tile never goes blank.
+    #[test]
+    fn glance_metric_falls_back_when_the_lane_is_missing() {
+        let snapshot = snap("codex", Some("personal"), 42.0);
+        let readout =
+            super::preferred_readout(&snapshot, codexbar::settings::MetricPreference::Weekly);
+        assert_eq!(readout.window.used_percent, 42.0);
+    }
+
+    /// Account ranking uses the pinned window too: with Session pinned, the
+    /// account that is hottest on Session wins even when the other seat's
+    /// Weekly is hotter.
+    #[test]
+    fn strip_ranking_uses_the_pinned_window() {
+        let cache = [
+            claude_session_weekly_snap(Some("a"), 10.0, 90.0),
+            claude_session_weekly_snap(Some("b"), 80.0, 5.0),
+        ];
+        let automatic = select_strip_snapshot(
+            cache.iter(),
+            "claude",
+            None,
+            codexbar::settings::MetricPreference::Automatic,
+        )
+        .unwrap();
+        assert_eq!(automatic.account_id.as_deref(), Some("a"));
+        let session = select_strip_snapshot(
+            cache.iter(),
+            "claude",
+            None,
+            codexbar::settings::MetricPreference::Session,
+        )
+        .unwrap();
+        assert_eq!(session.account_id.as_deref(), Some("b"));
     }
 
     /// SBS-876: ranking happens before `widget_model` filters errored
@@ -3323,7 +3453,13 @@ mod tests {
         failed.error = Some("network timeout".into());
 
         let cache = [failed, unavailable];
-        let picked = select_strip_snapshot(cache.iter(), "cursor", None).unwrap();
+        let picked = select_strip_snapshot(
+            cache.iter(),
+            "cursor",
+            None,
+            codexbar::settings::MetricPreference::Automatic,
+        )
+        .unwrap();
 
         assert_eq!(picked.account_id.as_deref(), Some("good"));
         assert!(picked.error.is_none());
@@ -3331,7 +3467,13 @@ mod tests {
         // A real reading still beats both.
         let mut cache = cache.to_vec();
         cache.push(snap("cursor", Some("hot"), 42.0));
-        let picked = select_strip_snapshot(cache.iter(), "cursor", None).unwrap();
+        let picked = select_strip_snapshot(
+            cache.iter(),
+            "cursor",
+            None,
+            codexbar::settings::MetricPreference::Automatic,
+        )
+        .unwrap();
         assert_eq!(picked.account_id.as_deref(), Some("hot"));
     }
 
@@ -3341,7 +3483,13 @@ mod tests {
             snap("codex", Some("personal"), 20.0),
             snap("codex", Some("work"), 80.0),
         ];
-        let picked = select_strip_snapshot(cache.iter(), "codex", Some("personal")).unwrap();
+        let picked = select_strip_snapshot(
+            cache.iter(),
+            "codex",
+            Some("personal"),
+            codexbar::settings::MetricPreference::Automatic,
+        )
+        .unwrap();
         assert_eq!(picked.account_id.as_deref(), Some("personal"));
     }
 
@@ -3351,7 +3499,13 @@ mod tests {
             snap("codex", Some("personal"), 20.0),
             snap("codex", Some("work"), 80.0),
         ];
-        let picked = select_strip_snapshot(cache.iter(), "codex", Some("gone")).unwrap();
+        let picked = select_strip_snapshot(
+            cache.iter(),
+            "codex",
+            Some("gone"),
+            codexbar::settings::MetricPreference::Automatic,
+        )
+        .unwrap();
         assert_eq!(picked.account_id.as_deref(), Some("work"));
     }
 
@@ -3431,7 +3585,13 @@ mod tests {
         let genuinely_hot = snap("claude", Some("work"), 80.0);
 
         let cache = [quiet_but_fable_maxed, genuinely_hot];
-        let picked = select_strip_snapshot(cache.iter(), "claude", None).unwrap();
+        let picked = select_strip_snapshot(
+            cache.iter(),
+            "claude",
+            None,
+            codexbar::settings::MetricPreference::Automatic,
+        )
+        .unwrap();
         assert_eq!(picked.account_id.as_deref(), Some("work"));
     }
 
@@ -3923,7 +4083,13 @@ mod tests {
         busy_session.secondary_label = Some("Weekly".into());
 
         let cache = [calm_session, busy_session];
-        let picked = select_strip_snapshot(cache.iter(), "claude", None).unwrap();
+        let picked = select_strip_snapshot(
+            cache.iter(),
+            "claude",
+            None,
+            codexbar::settings::MetricPreference::Automatic,
+        )
+        .unwrap();
         assert_eq!(picked.account_id.as_deref(), Some("a"));
     }
 
