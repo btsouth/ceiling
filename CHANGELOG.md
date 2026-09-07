@@ -2,6 +2,9 @@
 
 ## [Ceiling] Unreleased
 
+### Fixed
+- **The Glance metric setting now drives the taskbar strip.** The per-provider metric preference was saved but never read by the strip, so a Claude seat pinned to Session still showed the Weekly window. The tile and the account ranking now honor the pinned window, falling back to the automatic constraining choice when the provider does not report that lane. Fixes #411.
+
 ## [Ceiling] 1.5.37 - 2026-09-07
 
 Codex usage on GPT-6 Astra finally prices correctly, so an active Astra day no longer reads as $0.00 on Charts. The rest of this release applies the same honesty to failures elsewhere: a fetch that cannot read usage reports an error instead of a healthy 0%, one Claude seat's rate-limit backoff stays with that seat, and capacity baselines stop blurring directory seats that share a login email.
