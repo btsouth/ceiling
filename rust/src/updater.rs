@@ -511,6 +511,7 @@ pub fn verify_installer_signature(file_path: &Path) -> Result<(), String> {
     }
 }
 
+#[cfg(windows)]
 fn verify_installer_signature_or_delete(file_path: &Path) -> Result<(), String> {
     match verify_installer_signature(file_path) {
         Ok(()) => Ok(()),
