@@ -920,14 +920,22 @@ fn normalize_window_id(value: &str) -> String {
 }
 
 pub(crate) fn observation_scope(snapshot: &ProviderUsageSnapshot) -> String {
-    // Scope by BOTH account identifiers, not either/or: the same email can
+    // Scope by every account identifier, not either/or: the same email can
     // belong to different organizations (e.g. a personal vs a business
     // workspace) with distinct limits, and those must never share a baseline.
+    // Directory seats that share a login email (Codex personal + Team) also
+    // stamp distinct `account_id`s; omitting that id collapsed them (SBS-1079).
     let email = snapshot.account_email.as_deref().unwrap_or("");
     let organization = snapshot.account_organization.as_deref().unwrap_or("");
+    let account_id = snapshot
+        .account_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("");
     let raw = format!(
-        "{}|{}|{}|{}",
-        snapshot.provider_id, snapshot.source_label, email, organization
+        "{}|{}|{}|{}|{}",
+        snapshot.provider_id, snapshot.source_label, email, organization, account_id
     );
     format!("{}:{:016x}", snapshot.provider_id, fnv1a64(raw.as_bytes()))
 }
@@ -1552,6 +1560,84 @@ mod tests {
         );
         other.account_email = Some("other@example.com".into());
         assert!(observer.observe(&other).is_empty());
+    }
+
+    /// Two Codex directory seats can share a login email (personal + Team).
+    /// After #379 they stamp distinct `account_id`s; usage_history, threshold
+    /// toasts, and predictive pace already key on those. Capacity-event
+    /// observation used to hash provider|source|email|org only, so both seats
+    /// shared a baseline (SBS-1079).
+    fn shared_email_directory_seats(
+        at: DateTime<Utc>,
+        used: f64,
+        reset: DateTime<Utc>,
+        account_id: &str,
+    ) -> ProviderUsageSnapshot {
+        let mut seat = snapshot(at, used, reset);
+        seat.account_email = Some("Same@Example.com".into());
+        seat.account_organization = Some("Team".into());
+        seat.account_id = Some(account_id.into());
+        seat
+    }
+
+    #[test]
+    fn observation_scope_separates_directory_seats_that_share_an_email() {
+        let now = Utc::now();
+        let reset = now + Duration::hours(4);
+        let personal = shared_email_directory_seats(now, 90.0, reset, "acct-personal");
+        let work = shared_email_directory_seats(now, 10.0, reset, "acct-work");
+
+        assert_ne!(observation_scope(&personal), observation_scope(&work));
+        assert_eq!(
+            observation_scope(&personal),
+            observation_scope(&shared_email_directory_seats(
+                now + Duration::minutes(1),
+                91.0,
+                reset,
+                "acct-personal",
+            ))
+        );
+    }
+
+    #[test]
+    fn shared_email_directory_seats_do_not_confirm_each_others_resets() {
+        // Without account_id in the scope, the work seat's drop from the
+        // personal baseline looks like a confirmed surprise reset.
+        let start = Utc::now();
+        let old_reset = start + Duration::hours(4);
+        let new_reset = start + Duration::hours(9);
+        let mut observer = CapacityEventObserver::default();
+
+        assert!(
+            observer
+                .observe(&shared_email_directory_seats(
+                    start,
+                    85.0,
+                    old_reset,
+                    "acct-personal",
+                ))
+                .is_empty()
+        );
+        assert!(
+            observer
+                .observe(&shared_email_directory_seats(
+                    start + Duration::minutes(5),
+                    10.0,
+                    new_reset,
+                    "acct-work",
+                ))
+                .is_empty()
+        );
+        let events = observer.observe(&shared_email_directory_seats(
+            start + Duration::minutes(10),
+            12.0,
+            new_reset + Duration::minutes(2),
+            "acct-work",
+        ));
+        assert!(
+            events.is_empty(),
+            "shared-email seats must not share a capacity baseline: {events:?}"
+        );
     }
 
     #[test]
