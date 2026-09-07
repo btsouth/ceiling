@@ -1,6 +1,6 @@
 [package]
 name = "codexbar"
-version = "1.5.36"
+version = "1.5.37"
 edition = "2024"
 authors = ["Ceiling Contributors"]
 description = "Local-first Windows companion for monitoring AI capacity and reset times"
