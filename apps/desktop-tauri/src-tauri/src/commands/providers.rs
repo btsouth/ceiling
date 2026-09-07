@@ -684,8 +684,8 @@ pub(super) fn most_constrained_per_provider(
             .find(|existing| existing.provider_id == snapshot.provider_id)
         {
             Some(existing) => {
-                let existing_used = existing.primary.used_percent;
-                let used = snapshot.primary.used_percent;
+                let existing_used = snapshot_constraint_used_percent(existing);
+                let used = snapshot_constraint_used_percent(snapshot);
                 // Ties resolve on account id so the strip does not flicker
                 // between accounts as readings land in different orders.
                 let replace = used > existing_used
@@ -757,6 +757,14 @@ fn widget_entry_from_usage_snapshot(
     if let Some(tertiary) = snap.tertiary.as_ref() {
         entry = entry.with_tertiary(rate_window_from_snapshot(tertiary));
     }
+    if !snap.extra_rate_windows.is_empty() {
+        entry = entry.with_extra_rate_windows(
+            snap.extra_rate_windows
+                .iter()
+                .map(named_window_from_snapshot)
+                .collect(),
+        );
+    }
     if let Some(email) = snap.account_email.clone() {
         entry = entry.with_account_email(email);
     }
@@ -774,6 +782,63 @@ fn widget_entry_from_usage_snapshot(
         );
     }
     Some(entry)
+}
+
+/// Used % of the window the desktop strip would show for this snapshot.
+///
+/// Claude/Codex keep comparing primary so existing seat-picker tests stay
+/// stable. Cursor uses `cursorStripWindow` (Auto / API / on-demand), not Plan.
+fn snapshot_constraint_used_percent(snapshot: &ProviderUsageSnapshot) -> f64 {
+    if snapshot.provider_id != "cursor" {
+        return snapshot.primary.used_percent;
+    }
+    let owned = owned_windows_from_snapshot(snapshot);
+    codexbar::core::constraining_rate_window(
+        ProviderId::Cursor,
+        Some(&owned.primary),
+        owned.secondary.as_ref(),
+        owned.tertiary.as_ref(),
+        &owned.extras,
+    )
+    .map(|window| window.used_percent)
+    .unwrap_or(snapshot.primary.used_percent)
+}
+
+struct OwnedRankWindows {
+    primary: RateWindow,
+    secondary: Option<RateWindow>,
+    tertiary: Option<RateWindow>,
+    extras: Vec<codexbar::core::NamedRateWindow>,
+}
+
+fn owned_windows_from_snapshot(snapshot: &ProviderUsageSnapshot) -> OwnedRankWindows {
+    OwnedRankWindows {
+        primary: rate_window_from_snapshot(&snapshot.primary),
+        secondary: snapshot.secondary.as_ref().map(rate_window_from_snapshot),
+        tertiary: snapshot.tertiary.as_ref().map(rate_window_from_snapshot),
+        extras: snapshot
+            .extra_rate_windows
+            .iter()
+            .map(named_window_from_snapshot)
+            .collect(),
+    }
+}
+
+fn named_window_from_snapshot(extra: &NamedRateWindowSnapshot) -> codexbar::core::NamedRateWindow {
+    let mut named = codexbar::core::NamedRateWindow::new(
+        extra.id.clone(),
+        extra.title.clone(),
+        rate_window_from_snapshot(&extra.window),
+    );
+    if let Some(amount) = extra.amount.as_ref() {
+        let mut money =
+            codexbar::core::WindowAmount::new(amount.used, amount.currency_code.clone());
+        if let Some(limit) = amount.limit {
+            money = money.with_limit(limit);
+        }
+        named = named.with_amount(money);
+    }
+    named
 }
 
 fn rate_window_from_snapshot(window: &RateWindowSnapshot) -> RateWindow {
@@ -1704,5 +1769,75 @@ mod widget_snapshot_tests {
 
         let entry = widget_entry_from_usage_snapshot(&snap).expect("entry");
         assert_eq!(entry.primary.expect("measured primary").used_percent, 0.0);
+    }
+
+    /// SBS-1076: the strip ranks cursor-api / on-demand, but the widget snapshot
+    /// dropped extras so MCP could not match cursorStripWindow.
+    #[test]
+    fn widget_entry_persists_cursor_api_and_on_demand() {
+        let metadata = instantiate_provider(ProviderId::Cursor).metadata().clone();
+        let usage = UsageSnapshot::new(RateWindow::new(95.0))
+            .with_secondary(RateWindow::new(55.0))
+            .with_extra_rate_window("cursor-api", "API", RateWindow::new(12.0));
+        let mut usage = usage;
+        usage.extra_rate_windows.push(
+            codexbar::core::NamedRateWindow::new(
+                "cursor-on-demand",
+                "On-demand",
+                RateWindow::new(56.0),
+            )
+            .with_amount(codexbar::core::WindowAmount::new(1_002.16, "USD").with_limit(1_800.0)),
+        );
+        let result = ProviderFetchResult::new(usage, "oauth");
+        let snap = ProviderUsageSnapshot::from_fetch_result(ProviderId::Cursor, &metadata, &result);
+        let entry = widget_entry_from_usage_snapshot(&snap).expect("entry");
+
+        let ids: Vec<&str> = entry
+            .extra_rate_windows
+            .iter()
+            .map(|extra| extra.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["cursor-api", "cursor-on-demand"]);
+        let on_demand = entry
+            .extra_rate_windows
+            .iter()
+            .find(|extra| extra.id == "cursor-on-demand")
+            .expect("on-demand");
+        let amount = on_demand.amount.as_ref().expect("amount");
+        assert_eq!(amount.used, 1002.16);
+        assert_eq!(amount.limit, Some(1800.0));
+        // Spend already started: the strip surfaces on-demand even while Auto
+        // still has room. Persist has to keep the amount so that ranking can.
+        assert_eq!(
+            entry.constraining_rate_window().map(|w| w.used_percent),
+            Some(56.0),
+            "on-demand spend binds the strip window"
+        );
+    }
+
+    #[test]
+    fn widget_entry_cursor_ranking_keeps_auto_when_on_demand_is_unused() {
+        let metadata = instantiate_provider(ProviderId::Cursor).metadata().clone();
+        let usage = UsageSnapshot::new(RateWindow::new(95.0))
+            .with_secondary(RateWindow::new(55.0))
+            .with_extra_rate_window("cursor-api", "API", RateWindow::new(12.0));
+        let mut usage = usage;
+        usage.extra_rate_windows.push(
+            codexbar::core::NamedRateWindow::new(
+                "cursor-on-demand",
+                "On-demand",
+                RateWindow::new(0.0),
+            )
+            .with_amount(codexbar::core::WindowAmount::new(0.0, "USD").with_limit(1_800.0)),
+        );
+        let result = ProviderFetchResult::new(usage, "oauth");
+        let snap = ProviderUsageSnapshot::from_fetch_result(ProviderId::Cursor, &metadata, &result);
+        let entry = widget_entry_from_usage_snapshot(&snap).expect("entry");
+
+        assert_eq!(
+            entry.constraining_rate_window().map(|w| w.used_percent),
+            Some(55.0),
+            "unused on-demand must not let Plan outrank Auto"
+        );
     }
 }

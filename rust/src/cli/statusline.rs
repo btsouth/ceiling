@@ -151,6 +151,7 @@ mod tests {
             primary,
             secondary: None,
             tertiary: None,
+            extra_rate_windows: Vec::new(),
             credits_remaining: None,
             code_review_remaining_percent: None,
             token_usage: None,

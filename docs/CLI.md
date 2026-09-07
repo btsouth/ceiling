@@ -230,9 +230,9 @@ Tools:
 | Tool | Source | Notes |
 |---|---|---|
 | `list_providers` | widget snapshot + settings | Quota cache presence and whether local spend scanning is supported. |
-| `get_usage` | widget snapshot | Remaining quota windows. `period_cost_usd` is the provider's billed / current-period `CostSnapshot.used`, with `cost_period` as the provider's period label (for example `Monthly`). It is **not** this conversation's spend. |
+| `get_usage` | widget snapshot | Remaining quota windows, including `extra_rate_windows` (Cursor `cursor-api` and `cursor-on-demand`). `period_cost_usd` is the provider's billed / current-period `CostSnapshot.used`, with `cost_period` as the provider's period label (for example `Monthly`). It is **not** this conversation's spend. |
 | `get_spend` | local Codex / Claude / Grok logs | Estimated API-value spend for today, 7 days, and 30 days. Not a bill. |
-| `get_status` | snapshot + local logs | Compact remaining-quota plus `today_spend`. `remaining_percent` is the constraining window across primary/secondary/tertiary (exhausted first, then highest used %), not `usage.primary` alone. `usage` is the same object as `get_usage` (including `period_cost_usd`). `today_spend` is local estimated log spend for today. |
+| `get_status` | snapshot + local logs | Compact remaining-quota plus `today_spend`. `remaining_percent` is the same window the desktop strip shows — not `usage.primary` alone. Claude/Codex rank primary/secondary/tertiary (exhausted first, then highest used %). Cursor uses `cursorStripWindow`: hottest Auto/API with room, then on-demand when included lanes are gone or already billing, Plan only as fallback. `usage` is the same object as `get_usage` (including `extra_rate_windows` and `period_cost_usd`). `today_spend` is local estimated log spend for today. |
 
 `session_cost_usd` is not emitted. Older builds stuffed billed period cost into that name.
 

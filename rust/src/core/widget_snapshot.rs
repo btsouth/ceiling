@@ -5,7 +5,7 @@
 
 #![allow(dead_code)]
 
-use crate::core::{ProviderId, RateWindow};
+use crate::core::{NamedRateWindow, ProviderId, RateWindow};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -121,6 +121,11 @@ pub struct WidgetProviderEntry {
     /// Tertiary rate limit
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tertiary: Option<RateWindow>,
+    /// Extra labeled windows (Cursor `cursor-api` / `cursor-on-demand`, and
+    /// any other extras the desktop snapshot carries). Needed so MCP can
+    /// rank the same lanes the strip documents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_rate_windows: Vec<NamedRateWindow>,
     /// Credits remaining
     #[serde(skip_serializing_if = "Option::is_none")]
     pub credits_remaining: Option<f64>,
@@ -149,6 +154,7 @@ impl WidgetProviderEntry {
             primary: None,
             secondary: None,
             tertiary: None,
+            extra_rate_windows: Vec::new(),
             credits_remaining: None,
             code_review_remaining_percent: None,
             token_usage: None,
@@ -171,6 +177,27 @@ impl WidgetProviderEntry {
     pub fn with_tertiary(mut self, rate: RateWindow) -> Self {
         self.tertiary = Some(rate);
         self
+    }
+
+    pub fn with_extra_rate_windows(mut self, extras: Vec<NamedRateWindow>) -> Self {
+        self.extra_rate_windows = extras;
+        self
+    }
+
+    pub fn with_extra_rate_window(mut self, extra: NamedRateWindow) -> Self {
+        self.extra_rate_windows.push(extra);
+        self
+    }
+
+    /// Window that binds MCP `remaining_percent` / the widget seat picker.
+    pub fn constraining_rate_window(&self) -> Option<&RateWindow> {
+        super::constraining_rate_window(
+            self.provider,
+            self.primary.as_ref(),
+            self.secondary.as_ref(),
+            self.tertiary.as_ref(),
+            &self.extra_rate_windows,
+        )
     }
 
     pub fn with_credits_remaining(mut self, credits: f64) -> Self {
@@ -389,5 +416,29 @@ mod tests {
         assert_eq!(snapshot.entries.len(), 1);
         assert!(snapshot.is_enabled(ProviderId::Codex));
         assert!(!snapshot.is_enabled(ProviderId::Claude));
+    }
+
+    #[test]
+    fn widget_entry_roundtrips_cursor_extras() {
+        let extra = NamedRateWindow::new("cursor-api", "API", RateWindow::new(12.0))
+            .with_amount(crate::core::WindowAmount::new(0.0, "USD"));
+        let entry = WidgetProviderEntry::new(ProviderId::Cursor, Utc::now())
+            .with_primary(RateWindow::new(40.0))
+            .with_extra_rate_window(extra);
+        let encoded = serde_json::to_value(&entry).unwrap();
+        assert_eq!(encoded["extra_rate_windows"][0]["id"], "cursor-api");
+        let decoded: WidgetProviderEntry = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.extra_rate_windows[0].id, "cursor-api");
+        assert_eq!(decoded.extra_rate_windows[0].window.used_percent, 12.0);
+    }
+
+    #[test]
+    fn widget_entry_reads_legacy_snapshots_without_extras() {
+        let decoded: WidgetProviderEntry = serde_json::from_str(
+            r#"{"provider":"cursor","updated_at":"2026-08-23T00:00:00Z","primary":{"used_percent":40.0}}"#,
+        )
+        .unwrap();
+        assert!(decoded.extra_rate_windows.is_empty());
+        assert_eq!(decoded.primary.unwrap().used_percent, 40.0);
     }
 }
