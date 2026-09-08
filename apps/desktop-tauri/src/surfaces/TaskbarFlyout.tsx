@@ -31,6 +31,12 @@ import {
 } from "../lib/providerRow";
 
 const FLYOUT_WIDTH = 344;
+// Mirrors `FLYOUT_INITIAL_HEIGHT` in `shell/flyout_window.rs`. Used only when
+// the section has no layout to measure yet — never as a floor. Everything
+// outside `.taskbar-flyout` is transparent, so a window taller than the section
+// shows the desktop as a bare strip under the footer: header + one Unavailable
+// row + footer measures 163px, which the old `Math.max(174, …)` padded to 174.
+const FLYOUT_FALLBACK_HEIGHT = 174;
 const MAX_VISIBLE_PROVIDERS = 6;
 const MAX_VISIBLE_WINDOWS_PER_PROVIDER = 4;
 
@@ -359,7 +365,8 @@ export default function TaskbarFlyout({ state }: { state: BootstrapState }) {
         frame = null;
       // Windows owns the rounded outer edge; size directly to the content so
       // no transparent or CSS-border gutter can appear around that shape.
-      const height = Math.max(174, Math.ceil(surfaceRef.current?.scrollHeight ?? 174));
+      const measured = Math.ceil(surfaceRef.current?.scrollHeight ?? 0);
+      const height = measured > 0 ? measured : FLYOUT_FALLBACK_HEIGHT;
       void (async () => {
         await getCurrentWindow().setSize(new LogicalSize(FLYOUT_WIDTH, height)).catch(() => {});
         await reanchorTrayPanel().catch(() => {});
