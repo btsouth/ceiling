@@ -114,7 +114,7 @@ windows = { version = "0.58", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-winreg = "0.55"
+winreg = "0.56"
 
 [build-dependencies]
 chrono = "0.4"
