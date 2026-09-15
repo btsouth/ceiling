@@ -59,8 +59,18 @@ const windowMocks = vi.hoisted(() => ({
     onResized: vi.fn().mockResolvedValue(() => {}),
     innerSize: vi.fn().mockResolvedValue({ width: 328, height: 200 }),
   })),
-  LogicalSize: vi.fn((width: number, height: number) => ({ width, height })),
-  PhysicalSize: vi.fn((width: number, height: number) => ({ width, height })),
+  LogicalSize: class LogicalSize {
+    constructor(
+      public width: number,
+      public height: number,
+    ) {}
+  },
+  PhysicalSize: class PhysicalSize {
+    constructor(
+      public width: number,
+      public height: number,
+    ) {}
+  },
 }));
 
 const starPromptMocks = vi.hoisted(() => ({

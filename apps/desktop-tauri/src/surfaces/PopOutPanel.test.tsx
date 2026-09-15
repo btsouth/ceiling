@@ -53,8 +53,18 @@ const windowMocks = vi.hoisted(() => {
       isMaximized,
       onResized,
     })),
-    LogicalSize: vi.fn((width: number, height: number) => ({ width, height })),
-    LogicalPosition: vi.fn((x: number, y: number) => ({ x, y })),
+    LogicalSize: class LogicalSize {
+      constructor(
+        public width: number,
+        public height: number,
+      ) {}
+    },
+    LogicalPosition: class LogicalPosition {
+      constructor(
+        public x: number,
+        public y: number,
+      ) {}
+    },
   };
 });
 
