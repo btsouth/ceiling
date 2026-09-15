@@ -47,25 +47,27 @@ pub fn is_webview_alive(_window: &WebviewWindow) -> bool {
 }
 
 /// Drop `label`'s window when its webview is dead, so the caller's normal
-/// "window is missing -> build it" path runs. Returns `true` when a dead
-/// window was reclaimed.
+/// "window is missing -> build it" path runs.
 ///
 /// Only safe to call from the same context that would build the window (these
 /// windows are opened from async commands or spawned tasks); building from a
 /// synchronous Tauri command deadlocks on Windows.
-pub fn reclaim_dead_window(app: &tauri::AppHandle, label: &str) -> bool {
+///
+/// Returns `Ok(true)` when a dead window was reclaimed. A failure to destroy is
+/// returned so the caller can surface it rather than showing the dead frame.
+pub fn reclaim_dead_window(app: &tauri::AppHandle, label: &str) -> Result<bool, String> {
     let Some(window) = app.get_webview_window(label) else {
-        return false;
+        return Ok(false);
     };
     if is_webview_alive(&window) {
-        return false;
+        return Ok(false);
     }
     tracing::warn!(
         label,
         "webview exited under an existing window; dropping it so the next open rebuilds"
     );
-    let _ = window.destroy();
-    true
+    window.destroy().map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 #[cfg(windows)]

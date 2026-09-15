@@ -16,7 +16,7 @@ const SETTINGS_HEIGHT: f64 = 580.0;
 pub fn open_or_focus(app: &tauri::AppHandle, tab: &str) -> Result<(), String> {
     // See `webview_recovery`: a dead webview under a hidden frame must be
     // rebuilt, never shown empty (#410).
-    crate::webview_recovery::reclaim_dead_window(app, SETTINGS_LABEL);
+    crate::webview_recovery::reclaim_dead_window(app, SETTINGS_LABEL)?;
 
     if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
         window.show().map_err(|e| e.to_string())?;

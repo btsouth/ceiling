@@ -67,7 +67,7 @@ pub fn show(
 ) -> Result<(), String> {
     // A dead webview under the hidden window paints nothing; drop it so the
     // build path below runs instead of showing an empty strip (#410).
-    crate::webview_recovery::reclaim_dead_window(app, FLOATBAR_LABEL);
+    crate::webview_recovery::reclaim_dead_window(app, FLOATBAR_LABEL)?;
 
     if let Some(window) = app.get_webview_window(FLOATBAR_LABEL) {
         apply_no_activate(&window);
