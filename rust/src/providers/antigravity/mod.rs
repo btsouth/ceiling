@@ -70,7 +70,7 @@ impl AntigravityProvider {
                     $_.Name -like '*antigravity_cli*' -or \
                     ($_.Name -eq 'node.exe' -and $_.CommandLine -and \
                         $_.CommandLine -match '(?i)antigravity[-_]cli') \
-                } | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }",
+                } | ForEach-Object { \"$($_.ProcessId)`t$($_.Name)`t$($_.CommandLine)\" }",
         ]);
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -123,6 +123,20 @@ impl AntigravityProvider {
         first.contains("antigravity-cli") || first.contains("antigravity_cli")
     }
 
+    /// Whether an image name is an Antigravity CLI process.
+    ///
+    /// The PowerShell filter already matches `agy.exe` by image name, so the
+    /// name alone is enough even when WMI cannot read the process's command
+    /// line. That covers the `agy.exe` case where `$_.CommandLine` is empty.
+    fn is_cli_image_name(image_name: &str) -> bool {
+        let name = image_name.trim().to_ascii_lowercase();
+        !name.is_empty()
+            && (name == "agy.exe"
+                || name == "agy"
+                || name.contains("antigravity-cli")
+                || name.contains("antigravity_cli"))
+    }
+
     /// Whether a command line is an Antigravity IDE language_server process.
     fn is_ide_command_line(command_line: &str) -> bool {
         let lower = command_line.to_ascii_lowercase();
@@ -158,19 +172,22 @@ impl AntigravityProvider {
             .get_or_init(|| Regex::new(r"--https_server_port(?:=|\s+)(\d+)").expect("valid regex"));
 
         for raw_line in stdout.lines() {
-            let raw_line = raw_line.trim();
-            if raw_line.is_empty() {
+            if raw_line.trim().is_empty() {
                 continue;
             }
 
-            // Line is "<pid>\t<command line>"; split off the PID prefix we added so the
-            // PID can be used to enumerate the process's real listening ports below.
-            let (pid, line) = match raw_line.split_once('\t') {
-                Some((p, rest)) => (p.trim().parse::<u32>().ok(), rest),
-                None => (None, raw_line),
+            // Line is "<pid>\t<image name>\t<command line>". The image name is
+            // emitted separately because WMI can return an empty CommandLine,
+            // and the CLI is identified by its image name alone. Older
+            // two-column output (pid + command line) still parses.
+            let columns: Vec<&str> = raw_line.splitn(3, '\t').collect();
+            let (pid, image_name, line) = match columns.as_slice() {
+                [pid, name, line] => (pid.trim().parse::<u32>().ok(), name.trim(), line.trim()),
+                [pid, line] => (pid.trim().parse::<u32>().ok(), "", line.trim()),
+                _ => (None, "", raw_line.trim()),
             };
 
-            let is_cli = Self::is_cli_command_line(line);
+            let is_cli = Self::is_cli_command_line(line) || Self::is_cli_image_name(image_name);
             let is_ide = Self::is_ide_command_line(line);
             if !is_cli && !is_ide {
                 continue;
@@ -1180,6 +1197,39 @@ mod tests {
 
         assert_eq!(process.pid, Some(77));
         assert!(process.csrf_token.is_empty());
+    }
+
+    /// The detector now emits `<pid>\t<image name>\t<command line>` and matches
+    /// the CLI by image name as well, so a running `agy.exe` is still found when
+    /// WMI reports an empty `CommandLine`.
+    #[test]
+    fn agy_image_name_is_enough_when_the_command_line_is_empty() {
+        let output = "199364\tagy.exe\t";
+
+        let process = AntigravityProvider::parse_process_info(output)
+            .expect("agy.exe must be detected from its image name alone");
+
+        assert_eq!(process.pid, Some(199364));
+        assert!(process.csrf_token.is_empty());
+        assert_eq!(process.extension_port, 0);
+    }
+
+    #[test]
+    fn parses_the_three_column_process_line() {
+        let output = "45516\tagy.exe\t\"C:\\Users\\test\\AppData\\Local\\agy\\bin\\agy.exe\"";
+
+        let process =
+            AntigravityProvider::parse_process_info(output).expect("three-column agy.exe");
+
+        assert_eq!(process.pid, Some(45516));
+        assert!(process.csrf_token.is_empty());
+    }
+
+    #[test]
+    fn a_non_antigravity_image_name_is_not_matched() {
+        let output = "123\tchrome.exe\t\"C:\\Program Files\\Google\\Chrome\\chrome.exe\"";
+
+        assert!(AntigravityProvider::parse_process_info(output).is_none());
     }
 
     #[test]
