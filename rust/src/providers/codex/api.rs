@@ -390,9 +390,18 @@ impl CodexApi {
                 .filter(|window| !is_placeholder_window(window))
                 .map(|w| self.parse_window(w));
 
+            // Codex moved the code-review meter to a top-level
+            // `code_review_rate_limit`; the nested `rate_limit.code_review_window`
+            // is the older shape, so accept either.
             let code_review = rate_limit
                 .get("code_review_window")
-                .map(|w| self.parse_window(w));
+                .filter(|w| !is_placeholder_window(w))
+                .map(|w| self.parse_window(w))
+                .or_else(|| {
+                    json.get("code_review_rate_limit")
+                        .filter(|w| !w.is_null() && !is_placeholder_window(w))
+                        .map(|w| self.parse_window(w))
+                });
 
             let (primary, secondary, five_hour_not_enforced) =
                 normalize_codex_windows(primary_opt, secondary_opt);
@@ -429,13 +438,14 @@ impl CodexApi {
 
         let window_minutes = window
             .get("limit_window_seconds")
-            .and_then(|v| v.as_i64())
+            .and_then(json_i64)
             .map(|s| (s / 60) as u32);
 
         let reset_at = window
             .get("reset_at")
-            .and_then(|v| v.as_i64())
-            .and_then(|ts| Utc.timestamp_opt(ts, 0).single());
+            .and_then(json_i64)
+            .and_then(|ts| Utc.timestamp_opt(ts, 0).single())
+            .or_else(|| reset_after_to_instant(window));
 
         RateWindow::with_details(
             used_percent,
@@ -450,11 +460,11 @@ impl CodexApi {
             .and_then(|v| v.as_array())
             .into_iter()
             .flatten()
-            .filter_map(|entry| self.parse_additional_rate_limit(entry))
+            .flat_map(|entry| self.parse_additional_rate_limit(entry))
             .collect()
     }
 
-    fn parse_additional_rate_limit(&self, entry: &serde_json::Value) -> Option<NamedRateWindow> {
+    fn parse_additional_rate_limit(&self, entry: &serde_json::Value) -> Vec<NamedRateWindow> {
         let metered_feature = entry
             .get("metered_feature")
             .and_then(|v| v.as_str())
@@ -467,44 +477,81 @@ impl CodexApi {
             .filter(|v| !v.is_empty());
 
         let rate_limit = entry.get("rate_limit").unwrap_or(entry);
-        let primary = rate_limit.get("primary_window");
-        let secondary = rate_limit.get("secondary_window");
-        let window = primary.or(secondary)?;
-        if is_placeholder_window(window) {
-            return None;
+        let primary = rate_limit
+            .get("primary_window")
+            .filter(|window| !is_placeholder_window(window));
+        let secondary = rate_limit
+            .get("secondary_window")
+            .filter(|window| !is_placeholder_window(window));
+        if primary.is_none() && secondary.is_none() {
+            return Vec::new();
         }
 
-        let parsed = self.parse_window(window);
         let feature = metered_feature.unwrap_or_default();
         let limit = limit_name.unwrap_or_default();
+        // Spark's metered feature was renamed to `codex_bengalfox`, but its
+        // limit name still carries "Spark"; accept either so the dedicated
+        // Spark rows keep showing instead of degrading to a generic extra.
         let is_spark = feature.eq_ignore_ascii_case("codex_spark")
             || feature.eq_ignore_ascii_case("spark")
+            || feature.eq_ignore_ascii_case("codex_bengalfox")
             || limit.to_ascii_lowercase().contains("spark");
 
         if is_spark {
-            let is_weekly = secondary.is_some() && primary.is_none()
-                || parsed
+            // Spark now reports a five-hour AND a weekly window in one entry;
+            // surface both rather than dropping whichever is not primary.
+            let mut windows = Vec::new();
+            for window in [primary, secondary].into_iter().flatten() {
+                let parsed = self.parse_window(window);
+                let is_weekly = parsed
                     .window_minutes
-                    .is_some_and(|mins| mins >= 7 * 24 * 60);
-            let (id, title) = if is_weekly {
-                ("codex-spark-weekly", "Codex Spark Weekly")
-            } else {
-                ("codex-spark", "Codex Spark 5-hour")
-            };
-            return Some(NamedRateWindow::new(id, title, parsed));
+                    .is_some_and(|minutes| minutes >= 7 * 24 * 60);
+                let (id, title) = if is_weekly {
+                    ("codex-spark-weekly", "Codex Spark Weekly")
+                } else {
+                    ("codex-spark", "Codex Spark 5-hour")
+                };
+                if !windows
+                    .iter()
+                    .any(|existing: &NamedRateWindow| existing.id == id)
+                {
+                    windows.push(NamedRateWindow::new(id, title, parsed));
+                }
+            }
+            return windows;
         }
 
-        let label = limit_name.or(metered_feature)?;
+        let Some(label) = limit_name.or(metered_feature) else {
+            return Vec::new();
+        };
         let slug = slugify(label);
         if slug.is_empty() {
-            return None;
+            return Vec::new();
         }
+        let title = titleize_limit_label(label);
 
-        Some(NamedRateWindow::new(
-            format!("codex-{slug}"),
-            titleize_limit_label(label),
-            parsed,
-        ))
+        let mut windows = Vec::new();
+        if let Some(window) = primary {
+            windows.push(NamedRateWindow::new(
+                format!("codex-{slug}"),
+                title.clone(),
+                self.parse_window(window),
+            ));
+            if let Some(window) = secondary {
+                windows.push(NamedRateWindow::new(
+                    format!("codex-{slug}-weekly"),
+                    format!("{title} Weekly"),
+                    self.parse_window(window),
+                ));
+            }
+        } else if let Some(window) = secondary {
+            windows.push(NamedRateWindow::new(
+                format!("codex-{slug}"),
+                title,
+                self.parse_window(window),
+            ));
+        }
+        windows
     }
 
     /// The remaining credit balance, when the account has metered credits.
@@ -527,7 +574,7 @@ impl CodexApi {
         {
             return None;
         }
-        credits.get("balance").and_then(|v| v.as_f64())
+        credits.get("balance").and_then(json_f64)
     }
 
     /// Money actually spent against a credit allowance.
@@ -539,10 +586,16 @@ impl CodexApi {
     /// balance is surfaced separately as its own line instead.
     fn extract_credits(&self, json: &serde_json::Value) -> Option<CostSnapshot> {
         let balance = Self::credit_balance(json)?;
-        let limit = json.get("individual_limit").or_else(|| {
-            json.get("rate_limit")
-                .and_then(|r| r.get("individual_limit"))
-        })?;
+        // OpenAI now nests the spend control under `spend_control`; the
+        // top-level and `rate_limit` copies are older shapes.
+        let limit = json
+            .get("spend_control")
+            .and_then(|spend_control| spend_control.get("individual_limit"))
+            .or_else(|| json.get("individual_limit"))
+            .or_else(|| {
+                json.get("rate_limit")
+                    .and_then(|r| r.get("individual_limit"))
+            })?;
         serde_json::from_value::<SpendControlLimitSnapshot>(limit.clone())
             .ok()?
             .to_cost_snapshot(balance)
@@ -692,12 +745,53 @@ struct CreditDetails {
 
 #[derive(Debug, Deserialize)]
 struct SpendControlLimitSnapshot {
+    #[serde(default, deserialize_with = "flexible_number::f64")]
     limit: Option<f64>,
+    #[serde(default, deserialize_with = "flexible_number::f64")]
     used: Option<f64>,
-    #[serde(default, alias = "remainingPercent")]
+    #[serde(
+        default,
+        alias = "remainingPercent",
+        deserialize_with = "flexible_number::f64"
+    )]
     remaining_percent: Option<f64>,
-    #[serde(default, alias = "resetsAt")]
+    #[serde(default, alias = "resetsAt", deserialize_with = "flexible_number::i64")]
     resets_at: Option<i64>,
+}
+
+/// OpenAI mixes JSON numbers and decimal strings for the same field across
+/// responses, so accept either shape when decoding money and reset instants.
+mod flexible_number {
+    use serde::{Deserialize, Deserializer};
+
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumberOrString {
+        Number(f64),
+        String(String),
+    }
+
+    pub fn f64<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match Option::<NumberOrString>::deserialize(deserializer)? {
+            Some(NumberOrString::Number(value)) => Some(value),
+            Some(NumberOrString::String(value)) => value.trim().parse::<f64>().ok(),
+            None => None,
+        })
+    }
+
+    pub fn i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match Option::<NumberOrString>::deserialize(deserializer)? {
+            Some(NumberOrString::Number(value)) => Some(value as i64),
+            Some(NumberOrString::String(value)) => value.trim().parse::<i64>().ok(),
+            None => None,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -820,6 +914,21 @@ fn json_f64(value: &serde_json::Value) -> Option<f64> {
         .or_else(|| value.as_str()?.trim().parse::<f64>().ok())
 }
 
+/// Integers that OpenAI may encode as JSON numbers or as decimal strings.
+fn json_i64(value: &serde_json::Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+        .or_else(|| value.as_f64().map(|value| value as i64))
+        .or_else(|| value.as_str()?.trim().parse::<i64>().ok())
+}
+
+/// Derive an absolute reset instant when the API only reports a countdown.
+fn reset_after_to_instant(window: &serde_json::Value) -> Option<DateTime<Utc>> {
+    let seconds = window.get("reset_after_seconds").and_then(json_i64)?;
+    (seconds > 0).then(|| Utc::now() + chrono::Duration::seconds(seconds))
+}
+
 fn is_placeholder_window(window: &serde_json::Value) -> bool {
     let has_usage = window
         .get("used_percent")
@@ -828,9 +937,9 @@ fn is_placeholder_window(window: &serde_json::Value) -> bool {
         .is_some();
     let has_duration = window
         .get("limit_window_seconds")
-        .and_then(|v| v.as_i64().or_else(|| v.as_str()?.parse::<i64>().ok()))
+        .and_then(json_i64)
         .is_some();
-    let has_reset = window.get("reset_at").is_some();
+    let has_reset = window.get("reset_at").is_some() || window.get("reset_after_seconds").is_some();
 
     !has_usage && !has_duration && !has_reset
 }
@@ -1312,6 +1421,115 @@ mod tests {
         );
         assert!(restored.inactive_rate_windows.is_empty());
         assert_eq!(restored.extra_rate_windows[0].id, "codex-spark-weekly");
+    }
+
+    #[test]
+    fn astra_era_payload_surfaces_weekly_primary_and_both_spark_windows() {
+        let api = CodexApi::new();
+        let json: serde_json::Value =
+            serde_json::from_str(include_str!("../fixtures/codex/astra-era.json"))
+                .expect("astra-era fixture");
+
+        let (usage, cost) = api.build_result_from_json(&json).expect("codex usage");
+
+        // The rate-limited account reports only the weekly window; it stays the
+        // reading, and the lifted five-hour window stays explicit.
+        assert_eq!(usage.primary.window_minutes, Some(10_080));
+        assert_eq!(usage.primary.used_percent, 100.0);
+        assert!(usage.secondary.is_none());
+        assert_eq!(usage.inactive_rate_windows.len(), 1);
+        assert_eq!(usage.inactive_rate_windows[0].id, "codex-five-hour");
+
+        // Spark reports a five-hour and a weekly window in one entry; both rows
+        // must survive instead of only the primary one.
+        let spark: Vec<_> = usage
+            .extra_rate_windows
+            .iter()
+            .filter(|window| window.id.starts_with("codex-spark"))
+            .collect();
+        assert_eq!(spark.len(), 2, "got {:?}", usage.extra_rate_windows);
+        let five_hour = spark
+            .iter()
+            .find(|window| window.id == "codex-spark")
+            .expect("spark five-hour row");
+        assert_eq!(five_hour.window.window_minutes, Some(300));
+        let weekly = spark
+            .iter()
+            .find(|window| window.id == "codex-spark-weekly")
+            .expect("spark weekly row");
+        assert_eq!(weekly.window.window_minutes, Some(10_080));
+
+        assert!(
+            cost.is_none(),
+            "no credits and no spend limit means no cost"
+        );
+    }
+
+    #[test]
+    fn string_encoded_numbers_and_spend_control_still_produce_a_cost() {
+        let api = CodexApi::new();
+        let (usage, cost) = api
+            .build_result_from_json(&json!({
+                "plan_type": "pro",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": "12.5",
+                        "limit_window_seconds": "604800"
+                    }
+                },
+                "credits": { "has_credits": true, "unlimited": false, "balance": "10.0" },
+                "spend_control": {
+                    "reached": false,
+                    "individual_limit": { "limit": "50", "resetsAt": "1790113323" }
+                }
+            }))
+            .expect("codex usage");
+
+        assert_eq!(usage.primary.used_percent, 12.5);
+        assert_eq!(usage.primary.window_minutes, Some(10_080));
+
+        let cost = cost.expect("spend_control.individual_limit must be honored");
+        assert!((cost.used - 40.0).abs() < 0.01, "used = limit - balance");
+        assert_eq!(cost.limit, Some(50.0));
+        assert!(cost.resets_at.is_some());
+    }
+
+    #[test]
+    fn top_level_code_review_rate_limit_is_surfaced() {
+        let api = CodexApi::new();
+        let (usage, _) = api
+            .build_result_from_json(&json!({
+                "rate_limit": {
+                    "primary_window": { "used_percent": 10, "limit_window_seconds": 18000 }
+                },
+                "code_review_rate_limit": {
+                    "used_percent": 30,
+                    "limit_window_seconds": 604800
+                }
+            }))
+            .expect("codex usage");
+
+        let code_review = usage.model_specific.expect("code review window");
+        assert_eq!(code_review.used_percent, 30.0);
+        assert_eq!(code_review.window_minutes, Some(10_080));
+    }
+
+    #[test]
+    fn reset_countdown_only_payload_still_has_a_reset_instant() {
+        let api = CodexApi::new();
+        let (usage, _) = api
+            .build_result_from_json(&json!({
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 5,
+                        "limit_window_seconds": 18000,
+                        "reset_after_seconds": 3600
+                    }
+                }
+            }))
+            .expect("codex usage");
+
+        assert!(usage.primary.resets_at.is_some());
     }
 
     #[test]
