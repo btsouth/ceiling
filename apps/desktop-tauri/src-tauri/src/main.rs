@@ -23,6 +23,7 @@ mod taskbar_widget;
 mod tray_bridge;
 mod tray_menu;
 mod usage_history;
+mod webview_recovery;
 mod window_positioner;
 
 use std::sync::Mutex;

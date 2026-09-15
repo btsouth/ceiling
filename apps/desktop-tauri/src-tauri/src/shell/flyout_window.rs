@@ -57,6 +57,10 @@ pub fn save_stored_size(width: u32, height: u32) {
 /// precedent) — callers must invoke this from an async context (an `async`
 /// command, or `tauri::async_runtime::spawn`), never a sync command handler.
 pub fn open_or_focus(app: &AppHandle, position: Option<(i32, i32)>) -> Result<(), String> {
+    // A WebView2 process exit leaves the hidden frame with no content; drop it
+    // so the build path below runs instead of showing a blank window (#410).
+    crate::webview_recovery::reclaim_dead_window(app, FLYOUT_LABEL);
+
     if let Some(window) = app.get_webview_window(FLYOUT_LABEL) {
         if let Some((x, y)) = position {
             let _ = window.set_position(PhysicalPosition::new(x, y));
