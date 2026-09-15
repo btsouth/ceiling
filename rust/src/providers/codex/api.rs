@@ -587,14 +587,20 @@ impl CodexApi {
     fn extract_credits(&self, json: &serde_json::Value) -> Option<CostSnapshot> {
         let balance = Self::credit_balance(json)?;
         // OpenAI now nests the spend control under `spend_control`; the
-        // top-level and `rate_limit` copies are older shapes.
+        // top-level and `rate_limit` copies are older shapes. A present but
+        // `null` value must not block the fallbacks.
         let limit = json
             .get("spend_control")
             .and_then(|spend_control| spend_control.get("individual_limit"))
-            .or_else(|| json.get("individual_limit"))
+            .filter(|limit| !limit.is_null())
+            .or_else(|| {
+                json.get("individual_limit")
+                    .filter(|limit| !limit.is_null())
+            })
             .or_else(|| {
                 json.get("rate_limit")
                     .and_then(|r| r.get("individual_limit"))
+                    .filter(|limit| !limit.is_null())
             })?;
         serde_json::from_value::<SpendControlLimitSnapshot>(limit.clone())
             .ok()?
@@ -1492,6 +1498,25 @@ mod tests {
         assert!((cost.used - 40.0).abs() < 0.01, "used = limit - balance");
         assert_eq!(cost.limit, Some(50.0));
         assert!(cost.resets_at.is_some());
+    }
+
+    #[test]
+    fn null_nested_spend_limit_falls_back_to_the_top_level_limit() {
+        let api = CodexApi::new();
+        let (_, cost) = api
+            .build_result_from_json(&json!({
+                "rate_limit": {
+                    "primary_window": { "used_percent": 10, "limit_window_seconds": 18000 }
+                },
+                "credits": { "has_credits": true, "unlimited": false, "balance": 10.0 },
+                "spend_control": { "reached": false, "individual_limit": null },
+                "individual_limit": { "limit": 50.0 }
+            }))
+            .expect("codex usage");
+
+        let cost = cost.expect("a null nested limit must not hide the top-level one");
+        assert!((cost.used - 40.0).abs() < 0.01);
+        assert_eq!(cost.limit, Some(50.0));
     }
 
     #[test]
