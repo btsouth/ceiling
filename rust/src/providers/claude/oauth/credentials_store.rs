@@ -960,7 +960,7 @@ mod tests {
             let _ = GetFileSecurityW(
                 PCWSTR(wide.as_ptr()),
                 DACL_SECURITY_INFORMATION.0,
-                PSECURITY_DESCRIPTOR(std::ptr::null_mut()),
+                None,
                 0,
                 &mut needed,
             );
@@ -975,7 +975,7 @@ mod tests {
             GetFileSecurityW(
                 PCWSTR(wide.as_ptr()),
                 DACL_SECURITY_INFORMATION.0,
-                descriptor,
+                Some(descriptor),
                 needed,
                 &mut needed,
             )

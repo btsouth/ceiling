@@ -432,7 +432,7 @@ impl CookieExtractor {
                     .to_vec();
 
             // Free the DPAPI-allocated buffer to prevent memory leaks
-            let _ = LocalFree(HLOCAL(output_blob.pbData as *mut _));
+            let _ = LocalFree(Some(HLOCAL(output_blob.pbData as *mut _)));
 
             Ok(decrypted)
         }

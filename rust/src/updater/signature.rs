@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
-use windows::Win32::Foundation::{BOOL, HWND, TRUST_E_NOSIGNATURE};
+use windows::Win32::Foundation::{HWND, TRUST_E_NOSIGNATURE};
 use windows::Win32::Security::WinTrust::{
     WINTRUST_ACTION_GENERIC_VERIFY_V2, WINTRUST_DATA, WINTRUST_DATA_0, WINTRUST_FILE_INFO,
     WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_FILE, WTD_REVOKE_WHOLECHAIN, WTD_STATEACTION_CLOSE,
@@ -130,7 +130,7 @@ fn publisher_subject_fingerprint(trust_data: &WINTRUST_DATA) -> Result<String, S
             );
         }
 
-        let signer = WTHelperGetProvSignerFromChain(provider_data, 0, BOOL(0), 0);
+        let signer = WTHelperGetProvSignerFromChain(provider_data, 0, false, 0);
         if signer.is_null() {
             return Err(
                 "Windows verified the signature but returned no publisher signer.".to_string(),

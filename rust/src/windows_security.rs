@@ -5,7 +5,7 @@ use std::mem::{size_of, size_of_val};
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 
-use windows::Win32::Foundation::{BOOL, CloseHandle, GENERIC_ALL, GENERIC_READ, HANDLE};
+use windows::Win32::Foundation::{CloseHandle, GENERIC_ALL, GENERIC_READ, HANDLE};
 use windows::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, ACL_SIZE_INFORMATION, AclSizeInformation,
     AddAccessAllowedAce, CreateWellKnownSid, DACL_SECURITY_INFORMATION, EqualSid, GetAce,
@@ -21,7 +21,7 @@ use windows::Win32::System::SystemServices::{
     ACCESS_ALLOWED_ACE_TYPE, SECURITY_DESCRIPTOR_REVISION,
 };
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-use windows::core::PCWSTR;
+use windows::core::{BOOL, PCWSTR};
 
 fn windows_error(context: &str, error: impl std::fmt::Debug) -> io::Error {
     io::Error::other(format!("{context}: {error:?}"))
@@ -176,7 +176,7 @@ pub fn path_dacl_is_readable_by_others(path: &Path) -> io::Result<bool> {
         let _ = GetFileSecurityW(
             PCWSTR(wide_path.as_ptr()),
             DACL_SECURITY_INFORMATION.0,
-            PSECURITY_DESCRIPTOR(std::ptr::null_mut()),
+            None,
             0,
             &mut descriptor_bytes,
         );
@@ -192,7 +192,7 @@ pub fn path_dacl_is_readable_by_others(path: &Path) -> io::Result<bool> {
         GetFileSecurityW(
             PCWSTR(wide_path.as_ptr()),
             DACL_SECURITY_INFORMATION.0,
-            descriptor,
+            Some(descriptor),
             descriptor_bytes,
             &mut descriptor_bytes,
         )
@@ -308,13 +308,20 @@ impl OwnedWellKnownSid {
 
 fn well_known_sid(kind: WELL_KNOWN_SID_TYPE) -> io::Result<OwnedWellKnownSid> {
     let mut sid_bytes = 0u32;
-    let _ = unsafe { CreateWellKnownSid(kind, None, PSID(std::ptr::null_mut()), &mut sid_bytes) };
+    let _ = unsafe { CreateWellKnownSid(kind, None, None, &mut sid_bytes) };
     if sid_bytes == 0 {
         return Err(io::Error::other("CreateWellKnownSid returned an empty SID"));
     }
     let mut buffer = vec![0u8; sid_bytes as usize];
-    unsafe { CreateWellKnownSid(kind, None, PSID(buffer.as_mut_ptr().cast()), &mut sid_bytes) }
-        .map_err(|error| windows_error("CreateWellKnownSid failed", error))?;
+    unsafe {
+        CreateWellKnownSid(
+            kind,
+            None,
+            Some(PSID(buffer.as_mut_ptr().cast())),
+            &mut sid_bytes,
+        )
+    }
+    .map_err(|error| windows_error("CreateWellKnownSid failed", error))?;
     Ok(OwnedWellKnownSid { buffer })
 }
 

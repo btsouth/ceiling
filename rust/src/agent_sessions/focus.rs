@@ -36,11 +36,12 @@ fn is_local_host(host: &str) -> bool {
 
 #[cfg(windows)]
 fn focus_process(pid: u32) -> SessionFocusResult {
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::Foundation::{HWND, LPARAM};
     use windows::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetWindowThreadProcessId, IsWindowVisible, SW_RESTORE, SetForegroundWindow,
         ShowWindow,
     };
+    use windows::core::BOOL;
 
     struct Search {
         pid: u32,

@@ -259,11 +259,11 @@ unsafe fn uia_buttons(hwnd: isize) -> Vec<AutomationButton> {
         CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
         CoUninitialize,
     };
+    use windows::Win32::System::Variant::VARIANT;
     use windows::Win32::UI::Accessibility::{
         CUIAutomation8, IUIAutomation, TreeScope_Descendants, UIA_ButtonControlTypeId,
         UIA_ControlTypePropertyId,
     };
-    use windows::core::VARIANT;
 
     unsafe {
         // Taskbar discovery may run on a short-lived worker thread. Initialize

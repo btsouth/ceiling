@@ -1459,8 +1459,8 @@ const LEGACY_CEILING_AUMID: &str = "Ceiling";
 /// `Win32_Storage_EnhancedStorage` to avoid enabling that feature for one
 /// constant; the value is fixed by the shell and documented by Microsoft.
 #[cfg(target_os = "windows")]
-const PKEY_APP_USER_MODEL_ID: windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY =
-    windows::Win32::UI::Shell::PropertiesSystem::PROPERTYKEY {
+const PKEY_APP_USER_MODEL_ID: windows::Win32::Foundation::PROPERTYKEY =
+    windows::Win32::Foundation::PROPERTYKEY {
         fmtid: windows::core::GUID::from_u128(0x9F4C2855_9F79_4B39_A8D0_E1D42DE1D5F3),
         pid: 5,
     };

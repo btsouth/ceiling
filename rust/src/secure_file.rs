@@ -879,13 +879,7 @@ fn capture_file_security(path: &Path) -> io::Result<CapturedFileSecurity> {
         OWNER_SECURITY_INFORMATION.0 | GROUP_SECURITY_INFORMATION.0 | DACL_SECURITY_INFORMATION.0;
     let mut needed = 0u32;
     unsafe {
-        let _ = GetFileSecurityW(
-            PCWSTR(wide.as_ptr()),
-            requested,
-            PSECURITY_DESCRIPTOR(std::ptr::null_mut()),
-            0,
-            &mut needed,
-        );
+        let _ = GetFileSecurityW(PCWSTR(wide.as_ptr()), requested, None, 0, &mut needed);
     }
     if needed == 0 {
         return Err(io::Error::other(
@@ -899,7 +893,7 @@ fn capture_file_security(path: &Path) -> io::Result<CapturedFileSecurity> {
         GetFileSecurityW(
             PCWSTR(wide.as_ptr()),
             requested,
-            PSECURITY_DESCRIPTOR(descriptor.as_mut_ptr().cast()),
+            Some(PSECURITY_DESCRIPTOR(descriptor.as_mut_ptr().cast())),
             needed,
             &mut needed,
         )
@@ -953,10 +947,9 @@ fn dacl_security_info(
 fn apply_captured_dacl(path: &Path, captured: &CapturedFileSecurity) -> io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
 
-    use windows::Win32::Foundation::BOOL;
     use windows::Win32::Security::Authorization::{SE_FILE_OBJECT, SetNamedSecurityInfoW};
-    use windows::Win32::Security::{ACL, GetSecurityDescriptorDacl, PSID};
-    use windows::core::PCWSTR;
+    use windows::Win32::Security::{ACL, GetSecurityDescriptorDacl};
+    use windows::core::{BOOL, PCWSTR};
 
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let descriptor = captured_descriptor(captured);
@@ -974,8 +967,8 @@ fn apply_captured_dacl(path: &Path, captured: &CapturedFileSecurity) -> io::Resu
             PCWSTR(wide.as_ptr()),
             SE_FILE_OBJECT,
             dacl_security_info(captured),
-            PSID::default(),
-            PSID::default(),
+            None,
+            None,
             (!dacl.is_null()).then_some(dacl.cast_const()),
             None,
         );
@@ -993,12 +986,11 @@ fn apply_captured_owner(path: &Path, captured: &CapturedFileSecurity) -> io::Res
     use std::mem::ManuallyDrop;
     use std::os::windows::ffi::OsStrExt;
 
-    use windows::Win32::Foundation::BOOL;
     use windows::Win32::Security::Authorization::{SE_FILE_OBJECT, SetNamedSecurityInfoW};
     use windows::Win32::Security::{
         GetSecurityDescriptorOwner, OBJECT_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION, PSID,
     };
-    use windows::core::PCWSTR;
+    use windows::core::{BOOL, PCWSTR};
 
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let descriptor = captured_descriptor(captured);
@@ -1015,8 +1007,8 @@ fn apply_captured_owner(path: &Path, captured: &CapturedFileSecurity) -> io::Res
             PCWSTR(wide.as_ptr()),
             SE_FILE_OBJECT,
             OBJECT_SECURITY_INFORMATION(OWNER_SECURITY_INFORMATION.0),
-            *owner,
-            PSID::default(),
+            Some(*owner),
+            None,
             None,
             None,
         );
@@ -1279,7 +1271,7 @@ fn protect_with_flags(plain: &[u8], flags: u32) -> io::Result<Vec<u8>> {
 
         let encrypted =
             std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize).to_vec();
-        let _ = LocalFree(HLOCAL(output_blob.pbData as *mut _));
+        let _ = LocalFree(Some(HLOCAL(output_blob.pbData as *mut _)));
         Ok(encrypted)
     }
 }
@@ -1318,7 +1310,7 @@ fn unprotect(encrypted: &[u8]) -> io::Result<Vec<u8>> {
 
         let plain =
             std::slice::from_raw_parts(output_blob.pbData, output_blob.cbData as usize).to_vec();
-        let _ = LocalFree(HLOCAL(output_blob.pbData as *mut _));
+        let _ = LocalFree(Some(HLOCAL(output_blob.pbData as *mut _)));
         Ok(plain)
     }
 }
@@ -1533,7 +1525,6 @@ mod tests {
         use std::mem::size_of;
         use std::os::windows::ffi::OsStrExt;
 
-        use windows::Win32::Foundation::BOOL;
         use windows::Win32::Security::{
             ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
             DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetFileSecurityW,
@@ -1542,7 +1533,7 @@ mod tests {
         };
         use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
         use windows::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
-        use windows::core::PCWSTR;
+        use windows::core::{BOOL, PCWSTR};
 
         let (_token_buffer, user_sid) = current_user_sid();
         let wide_path: Vec<u16> = path
@@ -1555,7 +1546,7 @@ mod tests {
             let _ = GetFileSecurityW(
                 PCWSTR(wide_path.as_ptr()),
                 DACL_SECURITY_INFORMATION.0,
-                PSECURITY_DESCRIPTOR(std::ptr::null_mut()),
+                None,
                 0,
                 &mut descriptor_bytes,
             );
@@ -1569,7 +1560,7 @@ mod tests {
             GetFileSecurityW(
                 PCWSTR(wide_path.as_ptr()),
                 DACL_SECURITY_INFORMATION.0,
-                descriptor,
+                Some(descriptor),
                 descriptor_bytes,
                 &mut descriptor_bytes,
             )
@@ -1704,7 +1695,7 @@ mod tests {
         use std::mem::size_of;
         use std::os::windows::ffi::OsStrExt;
 
-        use windows::Win32::Foundation::{BOOL, CloseHandle, HANDLE};
+        use windows::Win32::Foundation::{CloseHandle, HANDLE};
         use windows::Win32::Security::{
             ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
             DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetFileSecurityW,
@@ -1714,7 +1705,7 @@ mod tests {
         use windows::Win32::Storage::FileSystem::FILE_ALL_ACCESS;
         use windows::Win32::System::SystemServices::ACCESS_ALLOWED_ACE_TYPE;
         use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
-        use windows::core::PCWSTR;
+        use windows::core::{BOOL, PCWSTR};
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secure.json");
@@ -1734,7 +1725,7 @@ mod tests {
             let _ = GetFileSecurityW(
                 PCWSTR(wide_path.as_ptr()),
                 DACL_SECURITY_INFORMATION.0,
-                PSECURITY_DESCRIPTOR(std::ptr::null_mut()),
+                None,
                 0,
                 &mut descriptor_bytes,
             );
@@ -1749,7 +1740,7 @@ mod tests {
             GetFileSecurityW(
                 PCWSTR(wide_path.as_ptr()),
                 DACL_SECURITY_INFORMATION.0,
-                descriptor,
+                Some(descriptor),
                 descriptor_bytes,
                 &mut descriptor_bytes,
             )

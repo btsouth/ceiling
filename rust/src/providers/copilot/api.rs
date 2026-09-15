@@ -189,7 +189,7 @@ impl CopilotApi {
             CredReadW(
                 PCWSTR(target_wide.as_ptr()),
                 CRED_TYPE_GENERIC,
-                0,
+                None,
                 &mut credential,
             )
         };
