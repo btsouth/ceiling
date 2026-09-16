@@ -2,8 +2,16 @@
 
 ## [Ceiling] Unreleased
 
+## [Ceiling] 1.5.38 - 2026-09-16
+
+Codex usage keeps reading correctly through OpenAI's latest response changes, and the Antigravity CLI is recognized when Windows cannot read its process command line. A Windows rendering failure also gets a recovery path: the flyout, Settings, and FloatBar windows rebuild themselves after their WebView2 process exits instead of staying blank, and the taskbar flyout no longer leaves a strip of desktop showing under its last row.
+
 ### Fixed
+- **The flyout, Settings, and FloatBar rebuild themselves after a WebView2 crash.** Windows keeps a Tauri window's frame after the WebView2 browser and render processes exit, but the client area then paints nothing, and because these windows are hidden rather than closed the dead frame was reused on every open. Each window now checks for a live render host before opening and destroys the dead frame so a fresh one is built. Fixes the blank frame for those windows in #410; the main window needs an async rebuild path and remains open.
+- **Codex usage keeps reading through OpenAI's latest response changes.** The usage endpoint renamed and moved several fields, and the old parser silently dropped them: a quoted credit balance never rendered, the spend limit under `spend_control.individual_limit` and the top-level code-review meter were ignored, and Spark's weekly window was discarded. Those are read again, Spark is matched by its new `codex_bengalfox` meter, and numeric fields that arrive as strings still parse. Fixes #441.
+- **The Antigravity CLI is detected even when Windows cannot read its command line.** The detector matched `agy.exe` by image name but then re-derived the match from the command line, so an empty `CommandLine` from WMI made it report "not running" for a live CLI. It now matches the image name directly. Fixes #412.
 - **The Glance metric setting now drives the taskbar strip.** The per-provider metric preference was saved but never read by the strip, so a Claude seat pinned to Session still showed the Weekly window. The tile and the account ranking now honor the pinned window, falling back to the automatic constraining choice when the provider does not report that lane. Fixes #411.
+- **The taskbar flyout no longer shows a strip of desktop under its last row.** The flyout sized its window with a 174px floor, so when the content measured shorter, for example a single unavailable provider, the window kept the larger height and the extra transparent pixels showed the desktop. It now sizes to the measured content, keeping the old floor only as the no-layout fallback.
 
 ## [Ceiling] 1.5.37 - 2026-09-07
 
