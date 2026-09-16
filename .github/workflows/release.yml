@@ -285,7 +285,13 @@ jobs:
               throw "Refusing to replace assets on published release $tag."
             }
             gh release upload $tag @assets --clobber --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to upload assets to draft release $tag."
+            }
             gh release edit $tag --notes-file $notesPath --title "Ceiling $env:RELEASE_VERSION" --repo $env:GITHUB_REPOSITORY
+            if ($LASTEXITCODE -ne 0) {
+              throw "Failed to update draft release $tag."
+            }
           } else {
             gh release create $tag @assets `
               --verify-tag `
