@@ -187,8 +187,10 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) -
             // window is activated without foreground rights (e.g. right after
             // build, before the frontend's reveal); treating that as a
             // dismiss would clear the pending reveal and leave the flyout
-            // invisible.
-            if !window.is_visible().unwrap_or(true) {
+            // invisible. A failed query (the window is mid-teardown) is
+            // treated the same way: swallowing one blur is cheaper than
+            // dismissing a flyout that is about to be rebuilt.
+            if !window.is_visible().unwrap_or(false) {
                 return true;
             }
             let Some(st) = app.try_state::<Mutex<AppState>>() else {

@@ -63,6 +63,33 @@ struct MainRebuild {
     replay: Option<MainRequest>,
 }
 
+impl MainRebuild {
+    /// Queue `request` as the replay and claim the in-flight slot if it is
+    /// free. Returns whether the caller now owns the slot and must start
+    /// the rebuild thread.
+    fn enqueue(&mut self, request: Option<MainRequest>) -> bool {
+        self.replay = merge_replay(self.replay.take(), request);
+        if self.in_flight {
+            return false;
+        }
+        self.in_flight = true;
+        true
+    }
+
+    /// Release the in-flight slot and claim the queued replay in one step.
+    ///
+    /// Both must happen under the same lock: a request that lands between
+    /// them would be merged into a queue nobody reads (`enqueue` sees the
+    /// slot taken and does not spawn; this thread has already taken its
+    /// replay) and stay there until the next crash. Done together, it is
+    /// either claimed here or finds the slot free and starts its own
+    /// rebuild.
+    fn finish(&mut self) -> Option<MainRequest> {
+        self.in_flight = false;
+        self.replay.take()
+    }
+}
+
 static MAIN_REBUILD: Mutex<MainRebuild> = Mutex::new(MainRebuild {
     in_flight: false,
     replay: None,
@@ -238,17 +265,12 @@ pub(crate) fn resolve_live_main(
 /// precedent in `transition.rs`'s startup reveal fallback and keeps the
 /// blocking label wait off a tokio worker.
 fn dispatch_main_rebuild(app: &AppHandle, request: Option<MainRequest>) {
-    {
-        let mut rebuild = main_rebuild();
-        rebuild.replay = merge_replay(rebuild.replay.take(), request);
-        if rebuild.in_flight {
-            return;
-        }
-        rebuild.in_flight = true;
+    if !main_rebuild().enqueue(request) {
+        return;
     }
 
-    /// Clears `in_flight` however the thread ends; a pending replay
-    /// survives a panic and is picked up by the next dispatch.
+    /// Clears `in_flight` if the thread panics before `finish`; a pending
+    /// replay survives the panic and is picked up by the next dispatch.
     struct Ticket;
     impl Drop for Ticket {
         fn drop(&mut self) {
@@ -260,7 +282,7 @@ fn dispatch_main_rebuild(app: &AppHandle, request: Option<MainRequest>) {
     let _ = std::thread::spawn(move || {
         let ticket = Ticket;
         let result = rebuild_main(&app);
-        let replay = main_rebuild().replay.take();
+        let replay = main_rebuild().finish();
         drop(ticket);
 
         match result {
@@ -580,5 +602,80 @@ mod tests {
         let pending = open(SurfaceMode::PopOut);
         assert_eq!(merge_replay(Some(pending.clone()), None), Some(pending));
         assert_eq!(merge_replay(None, None), None);
+    }
+
+    #[test]
+    fn only_the_first_enqueue_owns_the_rebuild() {
+        let mut rebuild = MainRebuild {
+            in_flight: false,
+            replay: None,
+        };
+        assert!(rebuild.enqueue(Some(open(SurfaceMode::PopOut))));
+        assert!(!rebuild.enqueue(Some(open(SurfaceMode::TrayPanel))));
+        assert!(rebuild.in_flight);
+        assert_eq!(rebuild.replay, Some(open(SurfaceMode::TrayPanel)));
+    }
+
+    #[test]
+    fn finishing_releases_the_slot_and_claims_the_replay_together() {
+        let mut rebuild = MainRebuild {
+            in_flight: true,
+            replay: Some(open(SurfaceMode::PopOut)),
+        };
+        assert_eq!(rebuild.finish(), Some(open(SurfaceMode::PopOut)));
+        assert!(!rebuild.in_flight);
+        assert_eq!(rebuild.replay, None);
+    }
+
+    #[test]
+    fn a_request_racing_the_completion_is_never_stranded() {
+        // The lost-request shape is `in_flight == false` with a replay
+        // still queued: the worker took its replay, the request was merged
+        // behind it, and the worker then released the slot without looking
+        // again. Race `enqueue` against `finish` on a shared state and
+        // require that every interleaving hands the request to exactly one
+        // side — either the finishing worker replays it or the enqueuer is
+        // told to start a rebuild of its own.
+        use std::sync::{Arc, Barrier};
+
+        for _ in 0..500 {
+            let rebuild = Arc::new(Mutex::new(MainRebuild {
+                in_flight: true,
+                replay: None,
+            }));
+            let gate = Arc::new(Barrier::new(2));
+
+            let worker = {
+                let rebuild = Arc::clone(&rebuild);
+                let gate = Arc::clone(&gate);
+                std::thread::spawn(move || {
+                    gate.wait();
+                    rebuild.lock().unwrap().finish()
+                })
+            };
+            let caller = {
+                let rebuild = Arc::clone(&rebuild);
+                let gate = Arc::clone(&gate);
+                std::thread::spawn(move || {
+                    gate.wait();
+                    rebuild
+                        .lock()
+                        .unwrap()
+                        .enqueue(Some(open(SurfaceMode::TrayPanel)))
+                })
+            };
+
+            let replayed = worker.join().unwrap().is_some();
+            let spawned = caller.join().unwrap();
+            assert!(
+                replayed ^ spawned,
+                "the request must be claimed by exactly one side (replayed={replayed}, spawned={spawned})"
+            );
+            let state = rebuild.lock().unwrap();
+            assert!(
+                state.in_flight || state.replay.is_none(),
+                "a replay must never be queued with no rebuild in flight"
+            );
+        }
     }
 }
