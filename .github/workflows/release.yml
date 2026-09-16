@@ -263,6 +263,21 @@ jobs:
             "$env:RELEASE_ASSETS_DIR\Ceiling-$env:RELEASE_VERSION-portable.exe",
             "$env:RELEASE_ASSETS_DIR\Ceiling-$env:RELEASE_VERSION-portable.exe.sha256"
           )
+          $changelog = Get-Content CHANGELOG.md -Raw
+          $heading = "## [Ceiling] $($env:RELEASE_VERSION)"
+          $pattern = "(?ms)^" + [regex]::Escape($heading) + "[^\r\n]*\r?\n.*?(?=^## |\z)"
+          $section = [regex]::Match($changelog, $pattern)
+          if (-not $section.Success) {
+            throw "CHANGELOG.md has no section for $($env:RELEASE_VERSION); the release notes come from the changelog."
+          }
+          $notes = $section.Value.Trim()
+          $previousTag = (git describe --tags --abbrev=0 "$tag^" 2>$null)
+          if ($LASTEXITCODE -eq 0 -and $previousTag) {
+            $notes += "`n`n**Full Changelog**: https://github.com/$env:GITHUB_REPOSITORY/compare/$previousTag...$tag"
+          }
+          $notesPath = Join-Path $env:RUNNER_TEMP "release-notes.md"
+          Set-Content -Path $notesPath -Value $notes -Encoding utf8
+
           $releaseJson = gh release view $tag --json isDraft --repo $env:GITHUB_REPOSITORY 2>$null
           if ($LASTEXITCODE -eq 0) {
             $release = $releaseJson | ConvertFrom-Json
@@ -270,11 +285,12 @@ jobs:
               throw "Refusing to replace assets on published release $tag."
             }
             gh release upload $tag @assets --clobber --repo $env:GITHUB_REPOSITORY
+            gh release edit $tag --notes-file $notesPath --title "Ceiling $env:RELEASE_VERSION" --repo $env:GITHUB_REPOSITORY
           } else {
             gh release create $tag @assets `
               --verify-tag `
               --draft `
-              --generate-notes `
+              --notes-file $notesPath `
               --title "Ceiling $env:RELEASE_VERSION" `
               --repo $env:GITHUB_REPOSITORY
           }
