@@ -75,9 +75,54 @@ jobs:
       - run: cargo test --manifest-path apps/desktop-tauri/src-tauri/Cargo.toml
       - run: cargo clippy --manifest-path apps/desktop-tauri/src-tauri/Cargo.toml --all-targets -- -D warnings
 
+  # RUSTSEC advisories are published against versions that are already pinned in
+  # Cargo.lock, so nothing here noticed RUSTSEC-2026-0285 (rustls) or
+  # RUSTSEC-2026-0258 (h2) until they were found by hand, well after main had
+  # shipped with them. This job fails a pull request when a vulnerability is
+  # present in the lockfile, the same way the frontend job fails on a broken
+  # build.
+  #
+  # Advisories that are informational only (unmaintained, unsound, yanked) do
+  # not fail cargo audit, so the ones currently open against this graph do not
+  # block: fxhash, proc-macro-error, the unic-* set, event-listener, glib and
+  # rand 0.7. A real vulnerability has to be either bumped or waived with an
+  # explicit --ignore next to a comment saying why, as a lockfile-only entry
+  # such as an inactive optional driver would be.
+  audit:
+    name: Rust / advisory audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
+        with:
+          tool: cargo-audit
+      - run: cargo audit --file Cargo.lock
+
+  # One stable check name for branch protection, which requires `Rust`. A job
+  # that is skipped because a job it needs failed reports as skipped rather than
+  # failed, so a red `Rust / shared` or `Rust / desktop` left this required check
+  # looking satisfied. `if: always()` makes it run either way, and the step below
+  # turns any non-success result from any of them into a failure.
   rust:
     name: Rust
-    needs: [rust-shared, rust-desktop]
+    needs: [rust-shared, rust-desktop, audit]
+    if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
-      - run: echo "Rust checks passed."
+      - name: Fail unless every Rust job succeeded
+        env:
+          SHARED: ${{ needs.rust-shared.result }}
+          DESKTOP: ${{ needs.rust-desktop.result }}
+          AUDIT: ${{ needs.audit.result }}
+        run: |
+          echo "rust-shared=$SHARED rust-desktop=$DESKTOP audit=$AUDIT"
+          for result in "$SHARED" "$DESKTOP" "$AUDIT"; do
+            if [ "$result" != "success" ]; then
+              echo "::error::a required Rust job did not succeed, see the values above"
+              exit 1
+            fi
+          done
