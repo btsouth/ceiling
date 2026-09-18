@@ -4,6 +4,7 @@
 //! Uses Windows process detection to find CSRF token
 
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use regex_lite::Regex;
 use serde::Deserialize;
 #[cfg(windows)]
@@ -393,8 +394,12 @@ impl AntigravityProvider {
             .filter(|_| !process_info.csrf_token.is_empty())
             .map(|_| process_info.csrf_token.as_str());
 
-        // Plan / identity still live on GetUserStatus.
-        let user_status = Self::post_connect_json::<UserStatusResponse>(
+        // Plan / identity still live on GetUserStatus. Both reasons are kept:
+        // the full error for the debug log, and a status code for the message.
+        // Dropping them here is what left "no user status" with no way to tell
+        // a signed-out server from a changed response shape (#412).
+        let mut status_reason: Option<String> = None;
+        let user_status = match Self::post_connect_json::<UserStatusResponse>(
             &client,
             api_port,
             "GetUserStatus",
@@ -410,8 +415,19 @@ impl AntigravityProvider {
             alt_csrf,
         )
         .await
-        .ok()
-        .and_then(|resp| resp.user_status);
+        {
+            Ok(response) => {
+                if response.user_status.is_none() {
+                    status_reason = Some("empty response".to_string());
+                }
+                response.user_status
+            }
+            Err(error) => {
+                tracing::debug!(%error, "Antigravity GetUserStatus failed");
+                status_reason = Some(short_reason(&error));
+                None
+            }
+        };
 
         let plan_name = user_status.as_ref().and_then(|status| {
             status
@@ -423,7 +439,7 @@ impl AntigravityProvider {
         let email = user_status.as_ref().and_then(|status| status.email.clone());
 
         // Shared group pools (what Antigravity Settings shows).
-        if let Ok(summary) = Self::post_connect_json::<QuotaSummaryResponse>(
+        let summary_reason: Option<String> = match Self::post_connect_json::<QuotaSummaryResponse>(
             &client,
             api_port,
             "RetrieveUserQuotaSummary",
@@ -432,22 +448,34 @@ impl AntigravityProvider {
             alt_csrf,
         )
         .await
-            && let Some(mut snapshot) = parse_quota_summary(&summary)
         {
-            if let Some(plan) = plan_name {
-                snapshot = snapshot.with_login_method(plan);
+            Ok(summary) => match parse_quota_summary(&summary) {
+                Some(mut snapshot) => {
+                    if let Some(plan) = plan_name {
+                        snapshot = snapshot.with_login_method(plan);
+                    }
+                    if let Some(email) = email {
+                        snapshot = snapshot.with_email(email);
+                    }
+                    return Ok(snapshot);
+                }
+                None => {
+                    tracing::debug!("Antigravity quota summary carried no usable quota");
+                    Some("empty response".to_string())
+                }
+            },
+            Err(error) => {
+                tracing::debug!(%error, "Antigravity RetrieveUserQuotaSummary failed");
+                Some(short_reason(&error))
             }
-            if let Some(email) = email {
-                snapshot = snapshot.with_email(email);
-            }
-            return Ok(snapshot);
-        }
+        };
 
         // Fallback: older path using per-model remainingFraction on GetUserStatus.
         let Some(status) = user_status else {
-            return Err(ProviderError::Other(
-                "Antigravity returned no user status and no quota summary".to_string(),
-            ));
+            return Err(ProviderError::Other(format!(
+                "Antigravity returned no user status and no quota summary ({})",
+                describe_unusable(status_reason.as_deref(), summary_reason.as_deref())
+            )));
         };
         let mut snapshot = self.parse_user_status(UserStatusResponse {
             user_status: Some(status),
@@ -911,6 +939,39 @@ fn model_window_id(config: &ModelConfig) -> String {
     format!("model-{}", if slug.is_empty() { "unknown" } else { &slug })
 }
 
+/// The part of an API failure that is safe to show: the HTTP status when there
+/// is one, otherwise the shape of the failure.
+///
+/// The message `post_connect_json` builds also carries the response body, and
+/// this string ends up in the error the panel displays, so only the status code
+/// is carried across.
+fn short_reason(error: &ProviderError) -> String {
+    let text = error.to_string();
+    if let Some(rest) = text.strip_prefix("API error ") {
+        return match rest.split_whitespace().next() {
+            Some(code) => format!("HTTP {code}"),
+            None => "API error".to_string(),
+        };
+    }
+    if text.starts_with("Failed to parse") || matches!(error, ProviderError::Parse(_)) {
+        return "unparseable response".to_string();
+    }
+    "request failed".to_string()
+}
+
+/// Compact account of why both language-server calls came back unusable, for
+/// the error the panel shows (#412).
+fn describe_unusable(status_reason: Option<&str>, summary_reason: Option<&str>) -> String {
+    match (status_reason, summary_reason) {
+        (Some(status), Some(summary)) => {
+            format!("user status: {status}; quota summary: {summary}")
+        }
+        (Some(status), None) => format!("user status: {status}"),
+        (None, Some(summary)) => format!("quota summary: {summary}"),
+        (None, None) => "no detail available".to_string(),
+    }
+}
+
 fn rate_window_from_quota(quota: &QuotaInfo) -> RateWindow {
     rate_window_from_remaining(quota.remaining_fraction, quota.reset_time.clone())
 }
@@ -921,7 +982,22 @@ fn rate_window_from_remaining(
 ) -> RateWindow {
     let remaining = remaining_fraction.unwrap_or(1.0);
     let used_percent = ((1.0 - remaining) * 100.0).clamp(0.0, 100.0);
-    RateWindow::with_details(used_percent, None, None, reset_time)
+    // The language server reports this as an RFC 3339 timestamp, and it has to
+    // land in `resets_at`: that is the field every surface formats, as a
+    // relative countdown or in the user's local time. Passing it as the
+    // description instead made the panel print the raw ISO string (#412).
+    let resets_at = reset_time
+        .as_deref()
+        .and_then(|raw| DateTime::parse_from_rfc3339(raw).ok())
+        .map(|parsed| parsed.with_timezone(&Utc));
+    let description = match (&resets_at, reset_time) {
+        // A parsed timestamp needs no fallback text; the UI formats it.
+        (Some(_), _) => None,
+        // An unexpected shape keeps working exactly as it did before.
+        (None, Some(raw)) => Some(raw),
+        (None, None) => None,
+    };
+    RateWindow::with_details(used_percent, None, resets_at, description)
 }
 
 fn clean_model_label(label: &str) -> String {
@@ -1477,5 +1553,68 @@ mod tests {
     fn parse_quota_summary_empty_groups_returns_none() {
         let summary = make_quota_summary(serde_json::json!([]));
         assert!(parse_quota_summary(&summary).is_none());
+    }
+
+    #[test]
+    fn a_reset_timestamp_lands_in_resets_at_not_in_the_description() {
+        // #412: the language server sends RFC 3339, and every surface formats
+        // `resets_at`. Passing it as the description made the panel print the
+        // raw ISO string instead.
+        let window =
+            rate_window_from_remaining(Some(0.5), Some("2026-09-16T22:33:14Z".to_string()));
+        assert_eq!(
+            window.resets_at,
+            Some("2026-09-16T22:33:14Z".parse::<DateTime<Utc>>().unwrap())
+        );
+        assert_eq!(window.reset_description, None);
+    }
+
+    #[test]
+    fn a_reset_time_in_an_unexpected_shape_is_still_shown() {
+        let window = rate_window_from_remaining(Some(0.5), Some("in a while".to_string()));
+        assert_eq!(window.resets_at, None);
+        assert_eq!(window.reset_description.as_deref(), Some("in a while"));
+    }
+
+    #[test]
+    fn a_failure_reason_carries_the_status_but_never_the_response_body() {
+        let http = ProviderError::Other(
+            "API error 401 on GetUserStatus: {\"detail\":\"account 42\"}".to_string(),
+        );
+        assert_eq!(short_reason(&http), "HTTP 401");
+        assert!(!short_reason(&http).contains("account"));
+        assert_eq!(
+            short_reason(&ProviderError::Other(
+                "API request failed: error sending request".to_string()
+            )),
+            "request failed"
+        );
+        assert_eq!(
+            short_reason(&ProviderError::Parse("expected value".to_string())),
+            "unparseable response"
+        );
+        assert_eq!(
+            short_reason(&ProviderError::Other(
+                "Failed to parse GetUserStatus: expected value".to_string()
+            )),
+            "unparseable response"
+        );
+    }
+
+    #[test]
+    fn the_message_names_whichever_call_failed() {
+        assert_eq!(
+            describe_unusable(Some("HTTP 401"), Some("HTTP 401")),
+            "user status: HTTP 401; quota summary: HTTP 401"
+        );
+        assert_eq!(
+            describe_unusable(Some("HTTP 500"), None),
+            "user status: HTTP 500"
+        );
+        assert_eq!(
+            describe_unusable(None, Some("empty response")),
+            "quota summary: empty response"
+        );
+        assert_eq!(describe_unusable(None, None), "no detail available");
     }
 }
