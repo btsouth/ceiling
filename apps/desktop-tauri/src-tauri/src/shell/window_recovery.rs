@@ -118,9 +118,46 @@ impl Drop for InFlight {
 }
 
 fn main_rebuild() -> std::sync::MutexGuard<'static, MainRebuild> {
-    MAIN_REBUILD
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    lock_rebuild(&MAIN_REBUILD)
+}
+
+fn lock_rebuild(slot: &Mutex<MainRebuild>) -> std::sync::MutexGuard<'_, MainRebuild> {
+    slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The rebuild thread's hold on the `main` in-flight slot.
+///
+/// Clears the slot if the thread panics before `finish`, so a panic cannot
+/// leave `main` unrecoverable for the session; a pending replay survives
+/// the panic and is picked up by the next dispatch. Once `finish` has run
+/// the drop is a no-op: `finish` already released the slot under the lock,
+/// and a caller queued on that lock may have claimed it in the meantime.
+/// Clearing again would wipe that claim and let the next caller start a
+/// second rebuild of `main` while the first is still running.
+struct Ticket<'a> {
+    slot: &'a Mutex<MainRebuild>,
+    armed: bool,
+}
+
+impl<'a> Ticket<'a> {
+    fn new(slot: &'a Mutex<MainRebuild>) -> Self {
+        Self { slot, armed: true }
+    }
+
+    /// Release the slot and take the replay together (`MainRebuild::finish`),
+    /// then disarm so the drop leaves the slot alone.
+    fn finish(&mut self) -> Option<MainRequest> {
+        self.armed = false;
+        lock_rebuild(self.slot).finish()
+    }
+}
+
+impl Drop for Ticket<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            lock_rebuild(self.slot).in_flight = false;
+        }
+    }
 }
 
 /// What a caller should do with a window it is about to show.
@@ -269,21 +306,11 @@ fn dispatch_main_rebuild(app: &AppHandle, request: Option<MainRequest>) {
         return;
     }
 
-    /// Clears `in_flight` if the thread panics before `finish`; a pending
-    /// replay survives the panic and is picked up by the next dispatch.
-    struct Ticket;
-    impl Drop for Ticket {
-        fn drop(&mut self) {
-            main_rebuild().in_flight = false;
-        }
-    }
-
     let app = app.clone();
     let _ = std::thread::spawn(move || {
-        let ticket = Ticket;
+        let mut ticket = Ticket::new(&MAIN_REBUILD);
         let result = rebuild_main(&app);
-        let replay = main_rebuild().finish();
-        drop(ticket);
+        let replay = ticket.finish();
 
         match result {
             Ok(()) => {
@@ -625,6 +652,44 @@ mod tests {
         assert_eq!(rebuild.finish(), Some(open(SurfaceMode::PopOut)));
         assert!(!rebuild.in_flight);
         assert_eq!(rebuild.replay, None);
+    }
+
+    #[test]
+    fn a_finished_ticket_leaves_a_later_claim_alone() {
+        // `finish` releases the slot; a caller queued on the lock claims it
+        // right after; the ticket then goes out of scope. That drop used to
+        // clear the slot unconditionally, wiping the new claim, so the
+        // caller after that would start a second rebuild of `main`.
+        let slot = Mutex::new(MainRebuild {
+            in_flight: false,
+            replay: None,
+        });
+        assert!(lock_rebuild(&slot).enqueue(Some(open(SurfaceMode::PopOut))));
+        let mut ticket = Ticket::new(&slot);
+
+        assert_eq!(ticket.finish(), Some(open(SurfaceMode::PopOut)));
+        assert!(lock_rebuild(&slot).enqueue(Some(open(SurfaceMode::TrayPanel))));
+        drop(ticket);
+
+        let state = lock_rebuild(&slot);
+        assert!(state.in_flight, "the later claim must survive the ticket");
+        assert_eq!(state.replay, Some(open(SurfaceMode::TrayPanel)));
+    }
+
+    #[test]
+    fn a_ticket_dropped_before_finish_releases_the_slot() {
+        // The panic path: the thread unwinds before `finish`, the slot is
+        // freed, and the replay stays queued for the next dispatch.
+        let slot = Mutex::new(MainRebuild {
+            in_flight: false,
+            replay: None,
+        });
+        assert!(lock_rebuild(&slot).enqueue(Some(open(SurfaceMode::PopOut))));
+        drop(Ticket::new(&slot));
+
+        let state = lock_rebuild(&slot);
+        assert!(!state.in_flight);
+        assert_eq!(state.replay, Some(open(SurfaceMode::PopOut)));
     }
 
     #[test]
