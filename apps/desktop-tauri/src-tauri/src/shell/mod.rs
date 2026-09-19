@@ -12,7 +12,9 @@ mod geometry;
 mod position;
 pub mod settings_window;
 mod transition;
+pub(crate) mod webview_lifecycle;
 mod window;
+pub(crate) mod window_recovery;
 
 #[cfg(test)]
 mod tests;

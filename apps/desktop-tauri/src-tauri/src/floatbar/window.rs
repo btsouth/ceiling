@@ -107,6 +107,7 @@ pub fn show(
         .visible(false)
         .build()
         .map_err(|e| e.to_string())?;
+    crate::shell::webview_lifecycle::watch(app, &win);
 
     // Restore prior geometry if we have one. Otherwise, taskbar style opens
     // near the bottom while the original floating style keeps its top-center

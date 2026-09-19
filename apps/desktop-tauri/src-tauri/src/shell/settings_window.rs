@@ -5,7 +5,7 @@ use tauri::{Emitter, Manager, PhysicalPosition, WebviewUrl};
 
 use crate::surface::SurfaceMode;
 
-const SETTINGS_LABEL: &str = "settings";
+pub(crate) const SETTINGS_LABEL: &str = "settings";
 const SETTINGS_WIDTH: f64 = 720.0;
 const SETTINGS_HEIGHT: f64 = 580.0;
 
@@ -45,6 +45,7 @@ pub fn open_or_focus(app: &tauri::AppHandle, tab: &str) -> Result<(), String> {
         .resizable(true)
         .build()
         .map_err(|e| e.to_string())?;
+    super::webview_lifecycle::watch(app, &win);
 
     // Force DWM caption to dark; keep WS_THICKFRAME since window is resizable
     super::dwm::force_dark_caption_resizable(&win);
