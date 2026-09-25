@@ -17,6 +17,69 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
+/// How long to wait after the configured initial delay for a PTY child to
+/// produce its first output before typing the script into it. Without this the
+/// script could be written before Windows ConPTY attached its reader and the
+/// keystrokes were discarded.
+const READY_GRACE: Duration = Duration::from_secs(2);
+
+/// The ConPTY cursor-position query (`CSI 6 n`) some Windows shells issue on
+/// startup and block on until the terminal answers.
+const DEVICE_STATUS_QUERY: &str = "\x1b[6n";
+/// Longest suffix of a partial query that has to be carried into the next PTY
+/// read so a query split across a read boundary is still seen.
+const DEVICE_STATUS_QUERY_MAX_SPLIT: usize = DEVICE_STATUS_QUERY.len() - 1;
+/// The answer, for a cursor at the home position.
+const DEVICE_STATUS_REPLY: &str = "\x1b[1;1R";
+
+/// Detects device-status queries that may straddle a PTY read boundary.
+///
+/// A ConPTY read is a byte-count slice, not a line, so the seven-byte query can
+/// arrive as `"\x1b[6"` then `"n"`. Checking one chunk in isolation misses it,
+/// the shell stays blocked, and it never consumes the scripted input. This
+/// keeps just enough of the previous chunk to see a split query and counts each
+/// occurrence exactly once.
+#[derive(Default)]
+struct DeviceStatusWatcher {
+    carry: String,
+}
+
+impl DeviceStatusWatcher {
+    /// Feed one read and return how many queries it completed.
+    fn observe(&mut self, chunk: &str) -> usize {
+        self.carry.push_str(chunk);
+        let mut completed = 0;
+        while let Some(at) = self.carry.find(DEVICE_STATUS_QUERY) {
+            completed += 1;
+            self.carry.drain(..at + DEVICE_STATUS_QUERY.len());
+        }
+        // Keep only a tail that could still be the start of a query; anything
+        // longer cannot become one.
+        if self.carry.len() > DEVICE_STATUS_QUERY_MAX_SPLIT {
+            let cut = self.carry.len() - DEVICE_STATUS_QUERY_MAX_SPLIT;
+            let mut cut = cut.min(self.carry.len());
+            while cut > 0 && !self.carry.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            self.carry.drain(..cut);
+        }
+        completed
+    }
+}
+
+/// Answer every ConPTY cursor-position query the watcher has completed,
+/// including ones split across reads.
+fn answer_device_status_report(
+    watcher: &mut DeviceStatusWatcher,
+    writer: &mut dyn Write,
+    chunk: &str,
+) {
+    for _ in 0..watcher.observe(chunk) {
+        let _ = write!(writer, "{DEVICE_STATUS_REPLY}");
+    }
+    let _ = writer.flush();
+}
+
 /// Result of running a TTY command
 #[derive(Debug, Clone)]
 pub struct TtyCommandResult {
@@ -608,6 +671,38 @@ impl TtyCommandRunner {
         // Initial delay
         std::thread::sleep(Duration::from_secs_f64(options.initial_delay_secs));
 
+        // Windows ConPTY discards input written before the shell has attached
+        // its console reader, so a fixed delay races process startup: typing
+        // the script while the shell was still starting dropped it, and the
+        // test that drives cmd.exe through this path failed intermittently
+        // under parallel load for exactly that reason. After the configured
+        // delay, give the shell a bounded window to produce its first output
+        // (banner or prompt) before typing. A program that stays silent still
+        // receives the script once the window closes, and the window is capped
+        // by the remaining timeout, so no caller can hang.
+        let ready_deadline =
+            Instant::now() + READY_GRACE.min(timeout.saturating_sub(start.elapsed()));
+        let mut device_status = DeviceStatusWatcher::default();
+        loop {
+            match rx.try_recv() {
+                Ok(chunk) => {
+                    // The readiness probe can be the first read of the session,
+                    // so it has to answer the handshake too, not just break.
+                    answer_device_status_report(&mut device_status, &mut *writer, &chunk);
+                    buffer.push_str(&chunk);
+                    last_output_time = Instant::now();
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => {
+                    if Instant::now() >= ready_deadline {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
+
         // Send the script if provided. PTYs expect carriage-return line endings
         // for interactive programs to treat writes like pressing Enter.
         let script_lines: Vec<&str> = script
@@ -664,13 +759,7 @@ impl TtyCommandRunner {
                 buffer.push_str(&chunk);
                 last_output_time = Instant::now();
 
-                // Some Windows ConPTY-backed shells issue an ANSI Device
-                // Status Report request and wait for a terminal cursor
-                // position response before processing scripted input.
-                if chunk.contains("\x1b[6n") {
-                    let _ = write!(writer, "\x1b[1;1R");
-                    let _ = writer.flush();
-                }
+                answer_device_status_report(&mut device_status, &mut *writer, &chunk);
 
                 // Check for URLs
                 if let Some(ref regex) = url_regex {
@@ -873,6 +962,70 @@ mod tests {
         assert_eq!(opts.idle_timeout_secs, Some(5.0));
         assert!(opts.stop_on_url);
         assert!(opts.stop_on_substrings.contains(&"error".to_string()));
+    }
+
+    #[test]
+    fn device_status_query_is_seen_across_read_boundaries() {
+        // Every possible split of the query must be detected exactly once in
+        // total, whether it lands whole in one read or across two.
+        for split in 0..=DEVICE_STATUS_QUERY.len() {
+            let (head, tail) = DEVICE_STATUS_QUERY.split_at(split);
+            let mut watcher = DeviceStatusWatcher::default();
+
+            let first = watcher.observe(head);
+            let second = watcher.observe(tail);
+            assert_eq!(
+                first + second,
+                1,
+                "split at {split} ({head:?} | {tail:?}) must complete exactly once"
+            );
+            // A trailing read with no query must not re-fire.
+            assert_eq!(watcher.observe(""), 0);
+        }
+    }
+
+    #[test]
+    fn device_status_query_counts_each_occurrence_once() {
+        let mut watcher = DeviceStatusWatcher::default();
+        assert_eq!(
+            watcher.observe("\x1b[6n\x1b[6n"),
+            2,
+            "two queries in one read"
+        );
+        assert_eq!(watcher.observe("\x1b[6n"), 1, "a later read fires again");
+        assert_eq!(watcher.observe("\x1b[6"), 0, "a partial query does not");
+        assert_eq!(watcher.observe("n"), 1, "and completes on the next read");
+    }
+
+    #[test]
+    fn device_status_replies_once_per_query() {
+        let mut watcher = DeviceStatusWatcher::default();
+        let mut out = Vec::new();
+        answer_device_status_report(&mut watcher, &mut out, "\x1b[6");
+        assert!(out.is_empty(), "partial query must not be answered yet");
+        answer_device_status_report(&mut watcher, &mut out, "n");
+        assert_eq!(String::from_utf8(out).expect("utf8"), DEVICE_STATUS_REPLY);
+    }
+
+    #[test]
+    fn device_status_query_is_not_confused_by_other_escape_output() {
+        let mut watcher = DeviceStatusWatcher::default();
+        // A DSR query buried in ordinary banner output is still answered once.
+        assert_eq!(watcher.observe("Microsoft Windows [\x1b[6nVersion 10]"), 1);
+        assert_eq!(watcher.observe("no query here"), 0);
+    }
+
+    #[test]
+    fn device_status_carry_does_not_grow_without_bound() {
+        let mut watcher = DeviceStatusWatcher::default();
+        for _ in 0..1000 {
+            assert_eq!(watcher.observe("plain output with no query"), 0);
+        }
+        assert!(
+            watcher.carry.len() <= DEVICE_STATUS_QUERY_MAX_SPLIT,
+            "carry must stay bounded, got {}",
+            watcher.carry.len()
+        );
     }
 
     #[test]
