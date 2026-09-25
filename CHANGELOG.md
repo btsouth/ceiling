@@ -2,6 +2,20 @@
 
 ## [Ceiling] Unreleased
 
+## [Ceiling] 1.5.39 - 2026-09-25
+
+The main window now recovers from a WebView2 crash the same way the flyout, Settings, and FloatBar already do, and every window reacts the moment its browser process fails instead of on the next open. Secrets stored through the keychain now reach Windows Credential Manager, Antigravity failures finally say what went wrong, and WSL distros with a custom mount root find their Windows-side usage again.
+
+### Fixed
+- **The main window rebuilds itself after a WebView2 crash.** It was the one window 1.5.38 could not recover, because its open paths run where building a window inline would deadlock. The rebuild now runs off-thread and replays whatever the user clicked once the new window is up. Ceiling also listens for WebView2's `ProcessFailed` event, so a visible window is rebuilt right away and a hidden one is torn down before it is next opened. Thanks to @diogochaves. Part of #410.
+- **Keychain secrets are stored in Windows Credential Manager.** The keyring library was built without its Windows backend, so every entry landed in an in-memory store: keychain API key lookups and the Claude credential entry never found anything, and the StepFun token cache was lost on exit. Entries now go to Credential Manager.
+- **Antigravity failures say what actually failed.** Both language server calls dropped their errors, so a signed-out server, a changed response, and a timeout all read "returned no user status and no quota summary". The panel now shows the HTTP status or the shape of the failure, and `diagnose -p antigravity` carries it too. The reset time also renders as a countdown instead of a raw ISO timestamp. See #412.
+- **WSL distros with a custom automount root find Windows usage again.** Ceiling assumed drives were mounted under `/mnt`, so a distro with `[automount] root = /` in `/etc/wsl.conf` silently found no Codex, Claude, or Cursor data on the Windows side. The mount root is now read from `wsl.conf`.
+- **The FloatBar's foreground watcher follows the bar.** Hiding the bar from its own menu left the 750 ms focus poller running for the rest of the session, and showing a bar that started disabled never started it, so "Active" mode stopped following focus. The watcher now starts and stops with the bar, only emits when the focused provider actually changes, and no longer replays a burst of missed ticks after standby.
+
+### Security
+- Updated `rustls` (RUSTSEC-2026-0285) and `h2` (RUSTSEC-2026-0258) past their advisories, and pinned the frontend's transitive `nanoid` past GHSA-2v37-7h3g-55p8. CI now fails on new Rust advisories.
+
 ## [Ceiling] 1.5.38 - 2026-09-16
 
 Codex usage keeps reading correctly through OpenAI's latest response changes, and the Antigravity CLI is recognized when Windows cannot read its process command line. A Windows rendering failure also gets a recovery path: the flyout, Settings, and FloatBar windows rebuild themselves after their WebView2 process exits instead of staying blank, and the taskbar flyout no longer leaves a strip of desktop showing under its last row.
