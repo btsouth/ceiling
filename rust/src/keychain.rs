@@ -309,4 +309,18 @@ mod tests {
             Err(Error::Disabled)
         );
     }
+
+    /// Without keyring's `windows-native` feature, entries silently fall back
+    /// to its in-memory mock store and never reach Credential Manager.
+    #[cfg(windows)]
+    #[test]
+    fn os_entries_use_windows_credential_manager() {
+        let entry = keyring::Entry::new("ceiling-backend-check", "probe").unwrap();
+        assert!(
+            entry
+                .get_credential()
+                .downcast_ref::<keyring::windows::WinCredential>()
+                .is_some()
+        );
+    }
 }
