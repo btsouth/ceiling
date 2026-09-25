@@ -2,6 +2,13 @@
 
 ## [Ceiling] Unreleased
 
+## [Ceiling] 1.5.40 - 2026-09-25
+
+The taskbar flyout stays readable when Windows reports a light taskbar color, including over bright windows and in dark app mode.
+
+### Fixed
+- **The taskbar flyout keeps a dark, opaque background.** Its background previously followed the sampled taskbar color so closely that a light sample made white labels and usage meters hard to read. The taskbar color now adds only a subtle tint to a dark surface. Fixes #468. Thanks to @jayn2u.
+
 ## [Ceiling] 1.5.39 - 2026-09-25
 
 The main window now recovers from a WebView2 crash the same way the flyout, Settings, and FloatBar already do, and every window reacts the moment its browser process fails instead of on the next open. Secrets stored through the keychain now reach Windows Credential Manager, Antigravity failures finally say what went wrong, and WSL distros with a custom mount root find their Windows-side usage again.
