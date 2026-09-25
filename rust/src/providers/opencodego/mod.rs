@@ -1,13 +1,19 @@
 //! OpenCode Go provider implementation
 //!
 //! Separate workspace surface that shares the `opencode.ai` cookie domain with
-//! the OpenCode provider. Resolves the workspace ID, then scrapes the `/go`
-//! usage page for rolling/weekly/monthly windows.
+//! the OpenCode provider. Tries the current Console workspace surface first;
+//! falls back to the legacy `/workspace/<id>/go` scraper only when a legacy
+//! `auth` cookie is present and the Console attempt fails recoverably.
+//! Ported from Win-CodexBar's Console fallback (upstream v0.64.0) and scoped
+//! down to this fork's simpler cookie-scrape-only provider (no local-SQLite
+//! or API-key source modes).
+
+mod console;
+mod legacy;
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use reqwest::Client;
-use uuid::Uuid;
+use std::time::Duration;
 
 use crate::core::{
     FetchContext, Provider, ProviderError, ProviderFetchResult, ProviderId, ProviderMetadata,
@@ -15,14 +21,59 @@ use crate::core::{
 };
 
 const BASE_URL: &str = "https://opencode.ai";
-const SERVER_URL: &str = "https://opencode.ai/_server";
-const WORKSPACES_SERVER_ID: &str =
-    "def39973159c7f0483d8793a822b8dbb10d067e12c65455fcb4608459ba0234f";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+/// Timeout for Console API calls; the legacy scraper uses the client's own
+/// (30s) default instead.
+const CONSOLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub struct OpenCodeGoProvider {
     metadata: ProviderMetadata,
     client: Client,
+}
+
+/// Which fallback paths a cookie header can support, sniffed once per fetch.
+#[derive(Clone, Copy)]
+struct CookieCapabilities {
+    console: bool,
+    legacy: bool,
+}
+
+/// Why the Console-first attempt produced no snapshot. `NoSubscription` is
+/// terminal: the Console answered authoritatively, so it is surfaced instead
+/// of retried against the legacy scraper.
+enum ConsoleError {
+    NoSubscription,
+    Failed(ProviderError),
+}
+
+fn cookie_capabilities(cookie_header: &str) -> CookieCapabilities {
+    let has_cookie = |names: &[&str]| {
+        cookie_header.split(';').any(|part| {
+            let Some((name, value)) = part.trim().split_once('=') else {
+                return false;
+            };
+            names.contains(&name.trim()) && !value.trim().is_empty()
+        })
+    };
+    CookieCapabilities {
+        console: has_cookie(&["__Host-console_session"]),
+        legacy: has_cookie(&["auth", "__Host-auth"]),
+    }
+}
+
+/// Errors worth retrying against the legacy scraper rather than surfacing
+/// directly — anything that looks like the Console surface itself is
+/// unreachable or misbehaving, as opposed to "no subscription", which is
+/// authoritative and not retried.
+fn is_recoverable(error: &ProviderError) -> bool {
+    matches!(
+        error,
+        ProviderError::AuthRequired
+            | ProviderError::Parse(_)
+            | ProviderError::Other(_)
+            | ProviderError::Timeout
+            | ProviderError::Network(_)
+    )
 }
 
 impl OpenCodeGoProvider {
@@ -47,295 +98,104 @@ impl OpenCodeGoProvider {
         }
     }
 
-    fn workspace_id_from_context(workspace_id: Option<&str>) -> Option<&str> {
-        workspace_id.filter(|id| !id.is_empty())
+    fn workspace_id_from_context(workspace_id: Option<&str>) -> Option<String> {
+        console::normalize_workspace_id(workspace_id)
     }
 
-    async fn fetch_workspace_id(&self, cookie_header: &str) -> Result<String, ProviderError> {
-        let url = format!("{}?id={}", SERVER_URL, WORKSPACES_SERVER_ID);
-        let response = self
-            .client
-            .get(&url)
-            .header("Cookie", cookie_header)
-            .header("X-Server-Id", WORKSPACES_SERVER_ID)
-            .header("X-Server-Instance", format!("server-fn:{}", Uuid::new_v4()))
-            .header("User-Agent", USER_AGENT)
-            .header("Origin", BASE_URL)
-            .header("Referer", BASE_URL)
-            .header(
-                "Accept",
-                "text/javascript, application/json;q=0.9, */*;q=0.8",
-            )
-            .send()
-            .await?;
+    /// The legacy scraper addresses `/workspace/<id>/go`, which only accepts
+    /// `wrk_` IDs, so an `org_` override (including one normalized out of a
+    /// Console URL) still falls back to discovery.
+    fn legacy_workspace_id_from_context(workspace_id: Option<&str>) -> Option<String> {
+        Self::workspace_id_from_context(workspace_id).filter(|id| id.starts_with("wrk_"))
+    }
 
-        let status = response.status();
-        if !status.is_success() {
-            if status.as_u16() == 401 || status.as_u16() == 403 {
-                return Err(ProviderError::AuthRequired);
+    /// Two auth failures are still an auth failure, so the browser-cookie path
+    /// can end in the sign-in prompt; any other pair keeps both causes.
+    fn combine_fallback_errors(
+        console_error: ProviderError,
+        legacy_error: ProviderError,
+    ) -> ProviderError {
+        match (&console_error, &legacy_error) {
+            (ProviderError::AuthRequired, ProviderError::AuthRequired) => {
+                ProviderError::AuthRequired
             }
-            return Err(ProviderError::Other(format!(
-                "OpenCode workspace API returned {}",
-                status
-            )));
+            _ => ProviderError::Other(format!("Console: {console_error}; Legacy: {legacy_error}")),
         }
-
-        let text = response.text().await?;
-        if Self::looks_signed_out(&text) {
-            return Err(ProviderError::AuthRequired);
-        }
-
-        let ids = Self::parse_workspace_ids(&text);
-        ids.into_iter()
-            .next()
-            .ok_or_else(|| ProviderError::Parse("No workspace ID found".to_string()))
     }
 
-    async fn fetch_usage_page(
-        &self,
-        workspace_id: &str,
-        cookie_header: &str,
-    ) -> Result<String, ProviderError> {
-        let url = format!("{}/workspace/{}/go", BASE_URL, workspace_id);
-        let response = self
-            .client
-            .get(&url)
-            .header("Cookie", cookie_header)
-            .header("User-Agent", USER_AGENT)
-            .header("Referer", BASE_URL)
-            .header(
-                "Accept",
-                "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            )
-            .send()
-            .await?;
-
-        let status = response.status();
-        if !status.is_success() {
-            if status.as_u16() == 401 || status.as_u16() == 403 {
-                return Err(ProviderError::AuthRequired);
-            }
-            return Err(ProviderError::Other(format!(
-                "OpenCode Go usage page returned {}",
-                status
-            )));
-        }
-
-        let text = response.text().await?;
-        if Self::looks_signed_out(&text) {
-            return Err(ProviderError::AuthRequired);
-        }
-        Ok(text)
-    }
-
-    fn parse_usage_text(text: &str) -> Result<UsageSnapshot, ProviderError> {
-        let now = Utc::now();
-
-        let raw_rolling = Self::extract_window(text, &["rollingUsage", "rolling_usage", "rolling"])
-            .ok_or_else(|| ProviderError::Parse("Missing rolling usage window".to_string()))?;
-        let raw_weekly = Self::extract_window(text, &["weeklyUsage", "weekly_usage", "weekly"]);
-        let raw_monthly = Self::extract_window(text, &["monthlyUsage", "monthly_usage", "monthly"]);
-
-        // The page reports every window on one scale, either whole percentages
-        // (`23` = 23%) or fractions of the limit (`0.23` = 23%). A lone `1` is
-        // ambiguous, so resolve the scale from the whole response before
-        // converting any window.
-        let fraction_scale = crate::core::detect_fraction_scale(
-            std::iter::once(raw_rolling.0)
-                .chain(raw_weekly.map(|window| window.0))
-                .chain(raw_monthly.map(|window| window.0)),
-        );
-
-        let rolling = crate::core::to_percent(raw_rolling.0, fraction_scale);
-        let weekly =
-            raw_weekly.map(|window| (crate::core::to_percent(window.0, fraction_scale), window.1));
-        let monthly =
-            raw_monthly.map(|window| (crate::core::to_percent(window.0, fraction_scale), window.1));
-
-        let primary = RateWindow::with_details(
-            rolling,
-            Some(300),
-            raw_rolling
-                .1
-                .map(|secs| now + chrono::Duration::seconds(secs)),
-            None,
-        );
-        let mut snap = UsageSnapshot::new(primary).with_login_method("OpenCode Go");
-
-        if let Some((pct, reset)) = weekly {
-            snap = snap.with_secondary(RateWindow::with_details(
-                pct,
-                Some(10080),
-                reset.map(|secs| now + chrono::Duration::seconds(secs)),
-                None,
-            ));
-        }
-
-        if let Some((pct, reset)) = monthly {
-            snap = snap
-                .with_tertiary(RateWindow::with_details(
-                    pct,
-                    Some(43200),
-                    reset.map(|secs| now + chrono::Duration::seconds(secs)),
-                    None,
-                ))
-                .with_tertiary_label("Monthly");
-        }
-
-        if let Some(renews_at) = Self::extract_renewal(text) {
-            snap = snap.with_extra_rate_window(
-                "renewal",
-                "Renews",
-                RateWindow::with_details(0.0, None, Some(renews_at), None),
-            );
-        }
-
-        Ok(snap)
-    }
-
-    /// Extract raw `(usage, resetInSec)` for a usage block by name, before any
-    /// percent-scale normalization.
-    ///
-    /// Reset is `None` when the percent matched but no reset field did. Callers
-    /// must not invent a `resets_at` of "now" for that case — that is a claim
-    /// about schedule, not an unknown.
-    fn extract_window(text: &str, names: &[&str]) -> Option<(f64, Option<i64>)> {
-        for name in names {
-            let percent_pattern = format!(
-                r#"{}[^}}]*?(?:usagePercent|usedPercent|percentUsed|percent)\s*[:=]\s*([0-9]+(?:\.[0-9]+)?)"#,
-                name
-            );
-            let reset_pattern = format!(
-                r#"{}[^}}]*?(?:resetInSec|resetInSeconds|resetSeconds|resetSec)\s*[:=]\s*([0-9]+)"#,
-                name
-            );
-
-            let percent = Self::extract_number(&percent_pattern, text);
-            if let Some(p) = percent {
-                let reset = Self::extract_number(&reset_pattern, text).map(|n| (n as i64).max(0));
-                return Some((p, reset));
-            }
-        }
-        None
-    }
-
-    fn extract_number(pattern: &str, text: &str) -> Option<f64> {
-        let re = regex_lite::Regex::new(pattern).ok()?;
-        re.captures(text)?.get(1)?.as_str().parse().ok()
-    }
-
-    fn extract_renewal(text: &str) -> Option<DateTime<Utc>> {
-        let re = regex_lite::Regex::new(
-            r#"(?:"renewAt"|"renew_at"|renewAt|renew_at)\s*[:=]\s*"?([^",}\s]+)"?"#,
+    /// Zen balance is credit *remaining*, so it is attached as an info-only
+    /// extra window and deliberately never turned into a `CostSnapshot`:
+    /// doing so would make spend fall as the user spends, and read $0 at
+    /// exactly the moment the balance runs out (#208).
+    fn attach_zen_balance(usage: UsageSnapshot, balance: f64) -> UsageSnapshot {
+        usage.with_extra_rate_window(
+            "zen-balance",
+            "Zen balance",
+            RateWindow::with_details(0.0, None, None, Some(format!("${balance:.2}"))),
         )
-        .ok()?;
-        let raw = re.captures(text)?.get(1)?.as_str();
-        Self::date_from_text(raw)
     }
 
-    fn date_from_text(raw: &str) -> Option<DateTime<Utc>> {
-        let text = raw.trim();
-        if text.is_empty() {
-            return None;
-        }
-        if let Ok(number) = text.parse::<f64>() {
-            return Self::date_from_timestamp(number);
-        }
-        DateTime::parse_from_rfc3339(text)
-            .ok()
-            .map(|dt| dt.with_timezone(&Utc))
-    }
-
-    fn date_from_timestamp(number: f64) -> Option<DateTime<Utc>> {
-        if !number.is_finite() || number <= 0.0 {
-            return None;
-        }
-        let seconds = if number > 10_000_000_000.0 {
-            number / 1000.0
-        } else {
-            number
+    async fn fetch_console(
+        &self,
+        cookie_header: &str,
+        workspace_override: Option<&str>,
+    ) -> Result<ProviderFetchResult, ConsoleError> {
+        let workspace_id = match Self::workspace_id_from_context(workspace_override) {
+            Some(id) => id,
+            None => console::fetch_workspace_id(&self.client, cookie_header, CONSOLE_TIMEOUT)
+                .await
+                .map_err(ConsoleError::Failed)?,
         };
-        DateTime::<Utc>::from_timestamp(seconds as i64, 0)
-    }
-
-    fn parse_workspace_ids(text: &str) -> Vec<String> {
-        let pattern = r#"(wrk_[A-Za-z0-9_-]+)"#;
-        let re = match regex_lite::Regex::new(pattern) {
-            Ok(r) => r,
-            Err(_) => return vec![],
-        };
-        let mut seen = Vec::new();
-        for caps in re.captures_iter(text) {
-            if let Some(m) = caps.get(1) {
-                let s = m.as_str().to_string();
-                if !seen.contains(&s) {
-                    seen.push(s);
-                }
-            }
-        }
-        seen
-    }
-
-    fn looks_signed_out(text: &str) -> bool {
-        let lower = text.to_lowercase();
-        lower.contains("auth/authorize")
-            || lower.contains("\"signin\"")
-            || lower.contains("please sign in")
-    }
-
-    fn parse_zen_balance(text: &str) -> Option<f64> {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(text)
-            && let Some(value) = Self::find_balance_value(&json)
+        match console::fetch_usage(&self.client, &workspace_id, cookie_header, CONSOLE_TIMEOUT)
+            .await
+            .map_err(ConsoleError::Failed)?
         {
-            return Some(value);
+            console::ConsoleUsage::Snapshot(usage) => {
+                let mut usage = *usage;
+                if let Ok(Some(balance)) = console::fetch_balance(
+                    &self.client,
+                    &workspace_id,
+                    cookie_header,
+                    CONSOLE_TIMEOUT,
+                )
+                .await
+                {
+                    usage = Self::attach_zen_balance(usage, balance);
+                }
+                Ok(ProviderFetchResult::new(usage, "web"))
+            }
+            console::ConsoleUsage::NoSubscription => Err(ConsoleError::NoSubscription),
         }
-        let patterns = [
-            r#"(?i)(?:current\s+balance|zen\s+balance|現在の残高)[^$]{0,80}\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)"#,
-            r#"(?i)(?:balance|残高)[\s\S]{0,120}?\$\s*([0-9][0-9,]*(?:\.[0-9]+)?)"#,
-        ];
-        patterns.iter().find_map(|pattern| {
-            let re = regex_lite::Regex::new(pattern).ok()?;
-            let raw = re.captures(text)?.get(1)?.as_str().replace(',', "");
-            raw.parse::<f64>().ok()
-        })
     }
 
-    fn find_balance_value(value: &serde_json::Value) -> Option<f64> {
-        match value {
-            serde_json::Value::Object(map) => {
-                for (key, value) in map {
-                    let normalized: String = key
-                        .to_lowercase()
-                        .chars()
-                        .filter(|c| c.is_ascii_alphanumeric())
-                        .collect();
-                    if matches!(
-                        normalized.as_str(),
-                        "zenbalance"
-                            | "zencurrentbalance"
-                            | "currentbalance"
-                            | "currentbalanceusd"
-                            | "balanceusd"
-                            | "usdbalance"
-                    ) {
-                        if let Some(number) = value.as_f64() {
-                            return Some(number);
-                        }
-                        if let Some(text) = value.as_str()
-                            && let Ok(number) = text.trim().replace(',', "").parse()
-                        {
-                            return Some(number);
-                        }
-                    }
-                    if let Some(found) = Self::find_balance_value(value) {
-                        return Some(found);
-                    }
-                }
-                None
+    async fn fetch_legacy(
+        &self,
+        cookie_header: &str,
+        workspace_override: Option<&str>,
+    ) -> Result<ProviderFetchResult, ProviderError> {
+        let workspace_id = match Self::legacy_workspace_id_from_context(workspace_override) {
+            Some(id) => id,
+            None => legacy::discover_workspace_id(&self.client, cookie_header).await?,
+        };
+        let legacy::LegacyUsage {
+            usage,
+            embedded_balance,
+        } = legacy::fetch_usage(&self.client, cookie_header, &workspace_id).await?;
+
+        let balance = match embedded_balance {
+            Some(balance) => Some(balance),
+            None => {
+                legacy::fetch_balance(&self.client, cookie_header, &workspace_id, CONSOLE_TIMEOUT)
+                    .await
+                    .ok()
+                    .flatten()
             }
-            serde_json::Value::Array(items) => items.iter().find_map(Self::find_balance_value),
-            _ => None,
-        }
+        };
+        let usage = match balance {
+            Some(balance) => Self::attach_zen_balance(usage, balance),
+            None => usage,
+        };
+        Ok(ProviderFetchResult::new(usage, "web"))
     }
 
     async fn fetch_with_cookies(
@@ -343,32 +203,34 @@ impl OpenCodeGoProvider {
         cookie_header: &str,
         workspace_id_override: Option<&str>,
     ) -> Result<ProviderFetchResult, ProviderError> {
-        let workspace_id = match Self::workspace_id_from_context(workspace_id_override) {
-            Some(workspace_id) => workspace_id.to_string(),
-            None => self.fetch_workspace_id(cookie_header).await?,
-        };
-        let page = self.fetch_usage_page(&workspace_id, cookie_header).await?;
-        Self::result_from_page(&page)
-    }
+        let capabilities = cookie_capabilities(cookie_header);
 
-    /// Build the snapshot from an already-fetched usage page.
-    ///
-    /// Split out from the fetch so the balance handling is testable without a
-    /// network round trip.
-    fn result_from_page(page: &str) -> Result<ProviderFetchResult, ProviderError> {
-        let mut usage = Self::parse_usage_text(page)?;
-        if let Some(balance) = Self::parse_zen_balance(page) {
-            usage = usage.with_extra_rate_window(
-                "zen-balance",
-                "Zen balance",
-                RateWindow::with_details(0.0, None, None, Some(format!("${balance:.2}"))),
-            );
+        match self
+            .fetch_console(cookie_header, workspace_id_override)
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(ConsoleError::NoSubscription) => Err(ProviderError::Parse(
+                "No OpenCode Go subscription is available".to_string(),
+            )),
+            Err(ConsoleError::Failed(console_error))
+                if capabilities.legacy && is_recoverable(&console_error) =>
+            {
+                match self
+                    .fetch_legacy(cookie_header, workspace_id_override)
+                    .await
+                {
+                    Ok(result) => Ok(result),
+                    // Both paths failed — surface both causes. Silently
+                    // preferring one used to hide the real failure behind
+                    // whichever path happened to fail with a vaguer message.
+                    Err(legacy_error) => {
+                        Err(Self::combine_fallback_errors(console_error, legacy_error))
+                    }
+                }
+            }
+            Err(ConsoleError::Failed(error)) => Err(error),
         }
-        // The Zen balance is credit *remaining*, so it is shown above as an
-        // info-only line and deliberately not reported as cost: putting it in
-        // `CostSnapshot.used` would make spend fall as the user spends, and
-        // read $0 at exactly the moment the balance runs out.
-        Ok(ProviderFetchResult::new(usage, "web"))
     }
 }
 
@@ -441,10 +303,9 @@ mod tests {
         // `currentBalance` is credit left. It used to be reported as
         // CostSnapshot.used, which inverted it: spend fell as the user spent
         // and read $0 exactly when the balance ran out.
-        // Shaped like the real page: unquoted JS keys for the windows, and the
-        // balance rendered as display text.
-        let page = r#"{rollingUsage: {usedPercent: 40, resetInSec: 3600}} Current balance $12.50"#;
-        let result = OpenCodeGoProvider::result_from_page(page).expect("usage");
+        let usage = UsageSnapshot::new(RateWindow::with_details(40.0, Some(300), None, None));
+        let usage = OpenCodeGoProvider::attach_zen_balance(usage, 12.50);
+        let result = ProviderFetchResult::new(usage, "web");
 
         assert!(result.cost.is_none(), "a balance is not money spent");
         let zen = result
@@ -458,20 +319,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_workspace_ids() {
-        let text = r#"{ id: "wrk_abc123", name: "x" } { id: "wrk_def456" }"#;
-        let ids = OpenCodeGoProvider::parse_workspace_ids(text);
-        assert_eq!(
-            ids,
-            vec!["wrk_abc123".to_string(), "wrk_def456".to_string()]
-        );
-    }
-
-    #[test]
     fn uses_context_workspace_id_before_discovery() {
         assert_eq!(
             OpenCodeGoProvider::workspace_id_from_context(Some("wrk_override")),
-            Some("wrk_override")
+            Some("wrk_override".to_string())
         );
         assert_eq!(
             OpenCodeGoProvider::workspace_id_from_context(Some("")),
@@ -480,91 +331,76 @@ mod tests {
     }
 
     #[test]
-    fn parses_usage_blocks_as_whole_percentages() {
-        let text = r#"
-            rollingUsage: { usagePercent: 42.5, resetInSec: 3600 }
-            weeklyUsage: { usagePercent: 13, resetInSec: 86400 }
-            monthlyUsage: { usagePercent: 7, resetInSec: 2592000 }
-        "#;
-        let snap = OpenCodeGoProvider::parse_usage_text(text).unwrap();
-        assert!((snap.primary.used_percent - 42.5).abs() < 0.001);
-        let secondary = snap.secondary.expect("weekly");
-        assert!((secondary.used_percent - 13.0).abs() < 0.001);
-        let tertiary = snap.tertiary.expect("monthly");
-        assert!((tertiary.used_percent - 7.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn parses_usage_blocks_as_fractions() {
-        let text = r#"
-            rollingUsage: { usagePercent: 0.425, resetInSec: 3600 }
-            weeklyUsage: { usagePercent: 0.13, resetInSec: 86400 }
-            monthlyUsage: { usagePercent: 0.07, resetInSec: 2592000 }
-        "#;
-        let snap = OpenCodeGoProvider::parse_usage_text(text).unwrap();
-        assert!((snap.primary.used_percent - 42.5).abs() < 0.001);
-        let secondary = snap.secondary.expect("weekly");
-        assert!((secondary.used_percent - 13.0).abs() < 0.001);
-        let tertiary = snap.tertiary.expect("monthly");
-        assert!((tertiary.used_percent - 7.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn one_percent_window_is_not_full() {
-        // The reported regression: a lightly used account sent `1` for its
-        // rolling window (1% on the whole-percent scale) with the other
-        // windows at `0`. The old per-window rule read that lone `1` as a
-        // fraction and rendered the rolling window as 100% used.
-        let text = r#"
-            rollingUsage: { usagePercent: 1, resetInSec: 3600 }
-            weeklyUsage: { usagePercent: 0, resetInSec: 86400 }
-            monthlyUsage: { usagePercent: 0, resetInSec: 2592000 }
-        "#;
-        let snap = OpenCodeGoProvider::parse_usage_text(text).unwrap();
-        assert!((snap.primary.used_percent - 1.0).abs() < 0.001);
-        let secondary = snap.secondary.expect("weekly");
-        assert!((secondary.used_percent - 0.0).abs() < 0.001);
-        let tertiary = snap.tertiary.expect("monthly");
-        assert!((tertiary.used_percent - 0.0).abs() < 0.001);
-    }
-
-    #[test]
-    fn parses_renewal_window() {
-        let text = r#"
-            rollingUsage: { usagePercent: 42.5, resetInSec: 3600 }
-            weeklyUsage: { usagePercent: 50, resetInSec: 86400 }
-            renewAt: "2026-06-01T12:00:00Z"
-        "#;
-        let snap = OpenCodeGoProvider::parse_usage_text(text).unwrap();
-        let renewal = snap
-            .extra_rate_windows
-            .iter()
-            .find(|window| window.id == "renewal")
-            .expect("renewal window");
-        assert_eq!(renewal.title, "Renews");
+    fn legacy_uses_wrk_override_and_discovers_for_other_ids() {
         assert_eq!(
-            renewal.window.resets_at.unwrap().to_rfc3339(),
-            "2026-06-01T12:00:00+00:00"
+            OpenCodeGoProvider::legacy_workspace_id_from_context(Some("wrk_override")),
+            Some("wrk_override".to_string())
+        );
+        assert_eq!(
+            OpenCodeGoProvider::legacy_workspace_id_from_context(Some(
+                "https://opencode.ai/workspace/wrk_url123/go"
+            )),
+            Some("wrk_url123".to_string())
+        );
+        // An org ID is a valid Console workspace but not a legacy one.
+        assert_eq!(
+            OpenCodeGoProvider::legacy_workspace_id_from_context(Some("org_123")),
+            None
+        );
+        assert_eq!(
+            OpenCodeGoProvider::legacy_workspace_id_from_context(None),
+            None
         );
     }
 
     #[test]
-    fn missing_reset_field_does_not_claim_resets_now() {
-        // Percent matched, reset key omitted → schedule is unknown. Substituting
-        // 0s would set resets_at to the fetch timestamp and poison pace/reset
-        // detection with a fake "resets this instant" claim.
-        let text = r#"
-            rollingUsage: { usagePercent: 42.5 }
-            weeklyUsage: { usagePercent: 13, resetInSec: 86400 }
-        "#;
-        let snap = OpenCodeGoProvider::parse_usage_text(text).unwrap();
-        assert!(
-            snap.primary.resets_at.is_none(),
-            "unknown reset must stay None, got {:?}",
-            snap.primary.resets_at
+    fn double_auth_required_stays_auth_required() {
+        assert!(matches!(
+            OpenCodeGoProvider::combine_fallback_errors(
+                ProviderError::AuthRequired,
+                ProviderError::AuthRequired
+            ),
+            ProviderError::AuthRequired
+        ));
+    }
+
+    #[test]
+    fn mixed_double_failure_keeps_both_causes() {
+        let error = OpenCodeGoProvider::combine_fallback_errors(
+            ProviderError::Parse("console broke".to_string()),
+            ProviderError::Other("legacy broke".to_string()),
         );
-        let secondary = snap.secondary.expect("weekly still parses with reset");
-        assert!(secondary.resets_at.is_some());
-        assert!((snap.primary.used_percent - 42.5).abs() < 0.001);
+        match error {
+            ProviderError::Other(message) => {
+                assert!(message.contains("console broke"));
+                assert!(message.contains("legacy broke"));
+            }
+            other => panic!("expected combined Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn console_cookie_is_detected_independently_of_legacy() {
+        let capabilities = cookie_capabilities("__Host-console_session=abc; other=1");
+        assert!(capabilities.console);
+        assert!(!capabilities.legacy);
+
+        let capabilities = cookie_capabilities("auth=xyz");
+        assert!(!capabilities.console);
+        assert!(capabilities.legacy);
+
+        let capabilities = cookie_capabilities("unrelated=1");
+        assert!(!capabilities.console);
+        assert!(!capabilities.legacy);
+    }
+
+    #[test]
+    fn recoverable_errors_allow_legacy_fallback() {
+        assert!(is_recoverable(&ProviderError::AuthRequired));
+        assert!(is_recoverable(&ProviderError::Parse("x".into())));
+        assert!(is_recoverable(&ProviderError::Timeout));
+        assert!(!is_recoverable(&ProviderError::UnsupportedSource(
+            SourceMode::Cli
+        )));
     }
 }
