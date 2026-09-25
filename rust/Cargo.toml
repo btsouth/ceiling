@@ -60,7 +60,7 @@ base64 = "0.22"
 sha2 = "0.10"
 
 # Secure credential storage
-keyring = "3"
+keyring = "4"
 
 # URL handling
 url = "2"
