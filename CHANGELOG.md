@@ -2,6 +2,13 @@
 
 ## [Ceiling] Unreleased
 
+## [Ceiling] 1.5.41 - 2026-09-25
+
+OpenCode Go usage reads again for accounts that moved to OpenCode's new Console workspace surface.
+
+### Fixed
+- **OpenCode Go usage reads again after OpenCode's Console migration.** Migrated accounts no longer serve usable data from the old `/workspace/<id>/go` page, so their usage stopped updating. The provider now reads the `/console/api/...` surface first and falls back to the legacy scraper only when a legacy `auth` cookie is present and the Console attempt fails recoverably; a valid no-subscription answer is surfaced directly instead of retried. The existing percent-scale detection, window labels, missing-reset handling, and Zen-balance-as-credit behavior apply to both paths. Thanks to @Redbirdma.
+
 ## [Ceiling] 1.5.40 - 2026-09-25
 
 The taskbar flyout stays readable when Windows reports a light taskbar color, including over bright windows and in dark app mode.
