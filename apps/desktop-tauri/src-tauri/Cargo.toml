@@ -21,6 +21,10 @@ tracing = "0.1"
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(windows)'.dependencies]
+# WebView2's `ProcessFailed` event (#410). Already in the lock file through
+# wry; a direct dependency only so `shell/webview_lifecycle.rs` can name the
+# interfaces `tauri::webview::PlatformWebview::controller()` hands out.
+webview2-com = "0.38"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_Com",

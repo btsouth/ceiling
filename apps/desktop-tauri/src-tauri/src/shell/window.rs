@@ -269,9 +269,6 @@ where
     P: FnOnce(SurfaceMode) -> bool,
 {
     let _transition_guard = SHELL_TRANSITION_SERIAL.lock().unwrap();
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window unavailable".to_string())?;
     let st = app
         .try_state::<Mutex<AppState>>()
         .ok_or_else(|| "app state unavailable".to_string())?;
@@ -282,6 +279,15 @@ where
 
     let Some(plan) = plan else {
         return Ok(None);
+    };
+
+    // The state now reads Hidden. A dead `main` is rebuilt in the background
+    // and comes back hidden, which is exactly what this path wanted, so
+    // there is nothing to replay; an open queued by another caller during
+    // the rebuild is kept (#410). Probed after the eligibility check so an
+    // event this path ignores never starts a rebuild on its own.
+    let Some(window) = super::window_recovery::resolve_live_main(app, None) else {
+        return Ok(Some(SurfaceMode::Hidden));
     };
 
     if let Some(transition) = plan.transition {

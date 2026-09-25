@@ -249,9 +249,19 @@ fn apply_transition_request(
     force_same_mode_apply: bool,
 ) -> Result<SurfaceMode, String> {
     let _transition_guard = SHELL_TRANSITION_SERIAL.lock().unwrap();
-    let window = app
-        .get_webview_window("main")
-        .ok_or_else(|| "main window unavailable".to_string())?;
+    // #410: a dead `main` would show as an empty transparent frame. The
+    // guard rebuilds it off-thread and replays this request afterwards, so
+    // returning here is the recovery starting, not the request being lost.
+    let Some(window) = super::window_recovery::resolve_live_main(
+        app,
+        Some(super::window_recovery::MainRequest {
+            mode: request.mode,
+            target: request.target.clone(),
+            position: request.position,
+        }),
+    ) else {
+        return Ok(SurfaceMode::Hidden);
+    };
     let st = app
         .try_state::<Mutex<AppState>>()
         .ok_or_else(|| "app state unavailable".to_string())?;
@@ -509,7 +519,10 @@ pub(super) fn restore_surface_snapshot(state: &mut AppState, snapshot: &SurfaceS
     }
 }
 
-fn commit_surface_snapshot(app: &AppHandle, snapshot: &SurfaceSnapshot) -> Result<(), String> {
+pub(super) fn commit_surface_snapshot(
+    app: &AppHandle,
+    snapshot: &SurfaceSnapshot,
+) -> Result<(), String> {
     let st = app
         .try_state::<Mutex<AppState>>()
         .ok_or_else(|| "app state unavailable".to_string())?;

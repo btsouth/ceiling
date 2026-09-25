@@ -57,6 +57,11 @@ pub fn save_stored_size(width: u32, height: u32) {
 /// precedent) — callers must invoke this from an async context (an `async`
 /// command, or `tauri::async_runtime::spawn`), never a sync command handler.
 pub fn open_or_focus(app: &AppHandle, position: Option<(i32, i32)>) -> Result<(), String> {
+    // A ProcessFailed teardown of this very window may still be waiting for
+    // its label; opening into that would show the dying frame or build a
+    // second window under the label (#410).
+    super::window_recovery::wait_for_flyout_rebuild();
+
     // A WebView2 process exit leaves the hidden frame with no content; drop it
     // so the build path below runs instead of showing a blank window (#410).
     crate::webview_recovery::reclaim_dead_window(app, FLYOUT_LABEL)?;
@@ -98,6 +103,7 @@ pub fn open_or_focus(app: &AppHandle, position: Option<(i32, i32)>) -> Result<()
         .disable_drag_drop_handler()
         .visible(false);
     let win = builder.build().map_err(|e| e.to_string())?;
+    super::webview_lifecycle::watch(app, &win);
 
     super::dwm::force_dark_caption(&win);
 
@@ -174,6 +180,17 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) -
     match event {
         tauri::WindowEvent::Focused(false) => {
             if crate::proof_harness::is_proof_mode(app) {
+                return true;
+            }
+            // A window that has never been shown cannot lose focus in any
+            // sense the user meant. Windows still reports one when a hidden
+            // window is activated without foreground rights (e.g. right after
+            // build, before the frontend's reveal); treating that as a
+            // dismiss would clear the pending reveal and leave the flyout
+            // invisible. A failed query (the window is mid-teardown) is
+            // treated the same way: swallowing one blur is cheaper than
+            // dismissing a flyout that is about to be rebuilt.
+            if !window.is_visible().unwrap_or(false) {
                 return true;
             }
             let Some(st) = app.try_state::<Mutex<AppState>>() else {
