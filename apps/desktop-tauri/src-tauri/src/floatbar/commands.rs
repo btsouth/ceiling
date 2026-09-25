@@ -14,12 +14,21 @@ pub async fn show_float_bar(app: AppHandle) -> Result<(), String> {
     let settings = Settings::update(|settings| settings.float_bar_enabled = true)
         .map_err(|e| e.to_string())?;
 
+    // Showing the bar can be the first time foreground watching becomes
+    // eligible (the setting may be enabled while the bar was hidden), so the
+    // watcher has to be started here and not only from `after_settings_saved`.
+    crate::foreground::apply_watch(&app, &settings);
     super::apply_state(&app, &settings)
 }
 
 #[tauri::command]
 pub fn hide_float_bar(app: AppHandle) -> Result<(), String> {
-    Settings::update(|settings| settings.float_bar_enabled = false).map_err(|e| e.to_string())?;
+    let settings = Settings::update(|settings| settings.float_bar_enabled = false)
+        .map_err(|e| e.to_string())?;
+    // Hiding disables the bar, which makes the watcher ineligible; without
+    // this it would keep polling Win32 and emitting to a closed webview for
+    // the rest of the process lifetime.
+    crate::foreground::apply_watch(&app, &settings);
     floatbar_window::hide(&app)
 }
 
