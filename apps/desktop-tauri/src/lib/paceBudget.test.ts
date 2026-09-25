@@ -1,6 +1,18 @@
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { RateWindowSnapshot } from "../types/bridge";
 import { getPaceBudget, getPaceChartSnapshot } from "./paceBudget";
+
+// `getPaceBudget` measures the "today" horizon from local midnight, so the
+// expected value only holds when the machine's timezone matches the UTC
+// timestamps used here. CI runs in UTC; a developer west of it would otherwise
+// see this suite fail for reasons unrelated to the code under test.
+beforeAll(() => {
+  vi.stubEnv("TZ", "UTC");
+});
+
+afterAll(() => {
+  vi.unstubAllEnvs();
+});
 
 function snapshot(
   overrides: Partial<RateWindowSnapshot> = {},
