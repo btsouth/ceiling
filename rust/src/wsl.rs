@@ -56,7 +56,7 @@ pub fn get_wsl_info() -> Option<WslInfo> {
         })
         .unwrap_or_else(|_| "Unknown".to_string());
 
-    let drive_mount = PathBuf::from("/mnt/c");
+    let drive_mount = drive_mount_for('c');
     let windows_username = resolve_windows_username(&drive_mount);
 
     Some(WslInfo {
@@ -64,6 +64,80 @@ pub fn get_wsl_info() -> Option<WslInfo> {
         windows_username,
         drive_mount,
     })
+}
+
+/// The mount point that serves Windows drive `letter`, honouring a custom
+/// `[automount] root` in `/etc/wsl.conf`.
+///
+/// WSL defaults to mounting drives at `/mnt/<letter>`, but a distro can set
+/// `root = /` (drives at `/c`) or any other prefix. Nothing else in this module
+/// needs to know the root, because every Windows path is built from the
+/// returned mount point.
+fn drive_mount_for(letter: char) -> PathBuf {
+    drive_mount_with_root(automount_root().as_deref(), letter)
+}
+
+/// Join a drive letter onto an explicit automount root, defaulting to `/mnt`.
+/// Split from `drive_mount_for` so the join rule is testable without a real
+/// `/etc/wsl.conf`.
+fn drive_mount_with_root(root: Option<&Path>, letter: char) -> PathBuf {
+    let letter = letter.to_ascii_lowercase().to_string();
+    match root {
+        Some(root) => root.join(letter),
+        None => PathBuf::from(format!("/mnt/{letter}")),
+    }
+}
+
+/// Parse `[automount] root` from `/etc/wsl.conf`, if it is set.
+///
+/// The value is a directory that replaces the `/mnt/` prefix; WSL writes `/mnt/`
+/// itself when the setting is absent, so a missing key or file yields `None`.
+/// An unreadable or malformed value also yields `None` so the default stands
+/// rather than pointing every Windows probe at a nonexistent directory.
+fn automount_root() -> Option<PathBuf> {
+    let content = std::fs::read_to_string("/etc/wsl.conf").ok()?;
+    parse_automount_root(&content)
+}
+
+/// Extract `[automount] root` from an `/etc/wsl.conf` body.
+fn parse_automount_root(content: &str) -> Option<PathBuf> {
+    let mut in_automount = false;
+    for raw in content.lines() {
+        let line = raw.split(['#', ';']).next().unwrap_or("").trim();
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with('[') {
+            let section = line.trim_matches(['[', ']']).trim();
+            in_automount = section.eq_ignore_ascii_case("automount");
+            continue;
+        }
+        if !in_automount {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if !key.trim().eq_ignore_ascii_case("root") {
+            continue;
+        }
+        // WSL accepts an unquoted path; tolerate a quoted one defensively.
+        let value = value.trim().trim_matches(['"', '\'']).trim();
+        if value.is_empty() || !value.starts_with('/') {
+            return None;
+        }
+        let mut root = PathBuf::from(value);
+        // A `root = /` yields an empty prefix, so `/c` is the mount point.
+        // Normalize `/mnt/` and `/` to the same shape so `join` does not
+        // produce `/mnt//c`.
+        if let Some(stripped) = value.strip_suffix('/')
+            && !stripped.is_empty()
+        {
+            root = PathBuf::from(stripped);
+        }
+        return Some(root);
+    }
+    None
 }
 
 /// Resolve the Windows username by looking at `<drive_mount>/Users`.
@@ -312,15 +386,27 @@ fn is_system_user_dir(name: &str) -> bool {
 
 /// Convert a Windows path to its WSL equivalent.
 ///
-/// `C:\Users\John\AppData\Local` becomes `/mnt/c/Users/John/AppData/Local`.
+/// `C:\Users\John\AppData\Local` becomes `/mnt/c/Users/John/AppData/Local`, or
+/// `/c/Users/John/AppData/Local` under a custom `[automount] root`.
 #[allow(dead_code)]
 pub fn windows_path_to_wsl(windows_path: &str) -> Option<PathBuf> {
+    windows_path_to_wsl_with_root(windows_path, automount_root().as_deref())
+}
+
+/// `windows_path_to_wsl` against an explicit automount root. Split out so the
+/// mapping is testable without a real `/etc/wsl.conf`.
+fn windows_path_to_wsl_with_root(windows_path: &str, root: Option<&Path>) -> Option<PathBuf> {
     let path = windows_path.replace('\\', "/");
 
     if path.len() >= 2 && path.as_bytes()[1] == b':' {
         let drive_letter = (path.as_bytes()[0] as char).to_lowercase().next()?;
         let rest = path[2..].trim_start_matches('/');
-        return Some(PathBuf::from(format!("/mnt/{}/{}", drive_letter, rest)));
+        let mount = drive_mount_with_root(root, drive_letter);
+        return Some(if rest.is_empty() {
+            mount
+        } else {
+            mount.join(rest)
+        });
     }
 
     None
@@ -398,15 +484,96 @@ mod tests {
 
     #[test]
     fn test_windows_path_to_wsl() {
+        let root = None;
         assert_eq!(
-            windows_path_to_wsl(r"C:\Users\John\AppData\Local"),
+            windows_path_to_wsl_with_root(r"C:\Users\John\AppData\Local", root),
             Some(PathBuf::from("/mnt/c/Users/John/AppData/Local"))
         );
         assert_eq!(
-            windows_path_to_wsl("D:\\Games"),
+            windows_path_to_wsl_with_root("D:\\Games", root),
             Some(PathBuf::from("/mnt/d/Games"))
         );
-        assert_eq!(windows_path_to_wsl("/home/user"), None);
+        assert_eq!(windows_path_to_wsl_with_root("/home/user", root), None);
+    }
+
+    #[test]
+    fn windows_path_to_wsl_honours_a_custom_root() {
+        // `[automount] root = /` is the case that used to silently break every
+        // Windows-side probe: paths live under `/c`, not `/mnt/c`.
+        let root = Some(Path::new("/"));
+        assert_eq!(
+            windows_path_to_wsl_with_root(r"C:\Users\John\AppData\Local", root),
+            Some(PathBuf::from("/c/Users/John/AppData/Local"))
+        );
+        assert_eq!(
+            windows_path_to_wsl_with_root(r"C:\", root),
+            Some(PathBuf::from("/c"))
+        );
+        assert_eq!(
+            windows_path_to_wsl_with_root("D:\\Games", Some(Path::new("/windows"))),
+            Some(PathBuf::from("/windows/d/Games"))
+        );
+    }
+
+    #[test]
+    fn parses_the_default_and_custom_automount_roots() {
+        // No key, no section, a commented-out key, or a non-root key all mean
+        // "use the /mnt default".
+        assert_eq!(parse_automount_root(""), None);
+        assert_eq!(
+            parse_automount_root("[interop]\nappendWindowsPath = true"),
+            None
+        );
+        assert_eq!(parse_automount_root("[automount]\n# root = /\n"), None);
+        assert_eq!(
+            parse_automount_root("[automount]\noptions = \"metadata\""),
+            None
+        );
+
+        assert_eq!(
+            parse_automount_root("[automount]\nroot = /mnt/"),
+            Some(PathBuf::from("/mnt"))
+        );
+        assert_eq!(
+            parse_automount_root("[automount]\nroot = /"),
+            Some(PathBuf::from("/"))
+        );
+        assert_eq!(
+            parse_automount_root("[automount]\nroot = /windows"),
+            Some(PathBuf::from("/windows"))
+        );
+        // Quoted values, trailing comments, and casing all appear in real
+        // wsl.conf files.
+        assert_eq!(
+            parse_automount_root("[automount]\nROOT = \"/\" # drives at /c"),
+            Some(PathBuf::from("/"))
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_automount_roots() {
+        // A relative or empty value is not a mount point; fall back to /mnt.
+        assert_eq!(parse_automount_root("[automount]\nroot = mnt"), None);
+        assert_eq!(parse_automount_root("[automount]\nroot ="), None);
+    }
+
+    #[test]
+    fn drive_mount_joins_the_root_without_doubling_slashes() {
+        // The join shape is what every Windows path in this module hangs off,
+        // so a `root = /` must still produce `/c`, not `//c`.
+        assert_eq!(
+            drive_mount_with_root(Some(Path::new("/")), 'c'),
+            PathBuf::from("/c")
+        );
+        assert_eq!(
+            drive_mount_with_root(Some(Path::new("/mnt")), 'c'),
+            PathBuf::from("/mnt/c")
+        );
+        assert_eq!(
+            drive_mount_with_root(Some(Path::new("/windows")), 'D'),
+            PathBuf::from("/windows/d")
+        );
+        assert_eq!(drive_mount_with_root(None, 'c'), PathBuf::from("/mnt/c"));
     }
 
     #[test]
