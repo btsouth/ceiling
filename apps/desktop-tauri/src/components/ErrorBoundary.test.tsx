@@ -122,6 +122,16 @@ describe("ErrorBoundary", () => {
     };
     expect(describeThrown(hostile)).toBe("[object Object]");
 
+    const hostileTag = {
+      [Symbol.toPrimitive]() {
+        throw new Error("no primitive");
+      },
+      get [Symbol.toStringTag]() {
+        throw new Error("no tag");
+      },
+    };
+    expect(describeThrown(hostileTag)).toBe("Unknown error");
+
     render(
       <ErrorBoundary>
         <Thrower value={Object.create(null)} />

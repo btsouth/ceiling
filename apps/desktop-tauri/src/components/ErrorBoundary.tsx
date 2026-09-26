@@ -16,16 +16,19 @@ interface ErrorBoundaryState {
 
 /** Human-readable form of a thrown value: `TypeError: …` for errors, `String(x)` otherwise. */
 export function describeThrown(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message ? `${error.name}: ${error.message}` : error.name;
-  }
   try {
+    if (error instanceof Error) {
+      return error.message ? `${error.name}: ${error.message}` : error.name;
+    }
     return String(error);
   } catch {
-    // `String()` itself throws for a null-prototype object or a value whose
-    // `Symbol.toPrimitive`/`toString` throws. This runs inside the fallback
-    // render with no boundary above it, so it must never propagate.
-    return Object.prototype.toString.call(error);
+    // The fallback renders with no boundary above it, so even an object with
+    // hostile conversion methods must not make this function throw.
+    try {
+      return Object.prototype.toString.call(error);
+    } catch {
+      return "Unknown error";
+    }
   }
 }
 
