@@ -105,6 +105,13 @@ all already succeeded. Only the Store submission is deferred.
 To submit the deferred version once the active submission clears, run
 **Validate Microsoft Store submission** with `publish` checked and that version.
 
+An error containing `modulenotready` and `packageuploaderror` is different from
+the active-submission conflict above. Microsoft reports it when package upload
+processing fails; do not skip or suppress it as a queue collision. Run
+**Validate Microsoft Store submission** with `publish` unchecked to verify the
+installer and inspect the current submission status in its log. Check Partner
+Center's package status before retrying the deferred submission.
+
 To clear the active submission instead, cancel it in Partner Center:
 
 1. Apps and Games overview, then open the app.

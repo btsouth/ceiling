@@ -104,6 +104,21 @@ jobs:
             throw "Microsoft Store CLI authentication failed."
           }
 
+      - name: Report current Microsoft Store submission status
+        shell: pwsh
+        env:
+          PARTNER_CENTER_PRODUCT_ID: ${{ vars.PARTNER_CENTER_PRODUCT_ID }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:PARTNER_CENTER_PRODUCT_ID)) {
+            throw "The store-validation environment is missing variable PARTNER_CENTER_PRODUCT_ID."
+          }
+          $statusOutput = msstore submission status $env:PARTNER_CENTER_PRODUCT_ID 2>&1 | Out-String
+          $statusExitCode = $LASTEXITCODE
+          Write-Host $statusOutput
+          if ($statusExitCode -ne 0) {
+            throw "Could not read Ceiling's current Microsoft Store submission status."
+          }
+
       - name: Read and prepare current Store package
         shell: pwsh
         env:
