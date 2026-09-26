@@ -2,6 +2,18 @@
 
 ## [Ceiling] Unreleased
 
+## [Ceiling] 1.5.42 - 2026-09-26
+
+The main window and Settings now wait for their first painted frame before opening or reappearing after a WebView2 failure. The taskbar capacity strip also adjusts when its available width changes.
+
+### Fixed
+- **Main and Settings reopen with complete content after WebView2 exits.** Both windows wait for the frontend to paint before becoming visible, including after recovery. A failed first render shows an error panel instead of leaving an empty window. The flyout also keeps rapid hover and click opens in order. Closes #410. Thanks to @diogochaves.
+- **The taskbar capacity strip redraws after the taskbar changes size.** Tiles use the verified space available, and the footer says "1 minute ago" at the one-minute mark. Fixes #475.
+- **Uninstall closes Ceiling and removes its Start at Login entry.** The next sign-in no longer tries to launch the removed app. Fixes #474.
+
+### Internal
+- Store validation reports failed package uploads, with an explicit recovery path after the failed submission is checked. Dependency updates bring `toml` and the Windows bindings forward.
+
 ## [Ceiling] 1.5.41 - 2026-09-25
 
 OpenCode Go usage reads again for accounts that moved to OpenCode's new Console workspace surface.
