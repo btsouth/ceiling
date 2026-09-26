@@ -109,8 +109,17 @@ An error containing `modulenotready` and `packageuploaderror` is different from
 the active-submission conflict above. Microsoft reports it when package upload
 processing fails; do not skip or suppress it as a queue collision. Run
 **Validate Microsoft Store submission** with `publish` unchecked to verify the
-installer and inspect the current submission status in its log. Check Partner
-Center's package status before retrying the deferred submission.
+installer and inspect the current submission status in its log. This validation
+fails when the Store reports `packageuploaderror`, even if its status command
+exits successfully. Check Partner Center's package status before retrying the
+deferred submission.
+
+If the package upload has failed and Partner Center shows no active submission,
+run the manual workflow with `publish=true` and `recover_failed_upload=true`.
+This explicit recovery uses the Store CLI's `--skipInitialPolling` option to
+replace the failed draft package with the already verified R2 installer. The
+CLI still waits for the replacement upload to become ready before submitting.
+Do not use this option for an ordinary in-flight submission.
 
 To clear the active submission instead, cancel it in Partner Center:
 
