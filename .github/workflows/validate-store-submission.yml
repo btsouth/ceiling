@@ -12,6 +12,11 @@ on:
         required: true
         default: false
         type: boolean
+      recover_failed_upload:
+        description: Replace a failed Store package upload before submitting (requires publish)
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -40,9 +45,14 @@ jobs:
         shell: pwsh
         env:
           STORE_VERSION: ${{ inputs.version }}
+          PUBLISH_STORE: ${{ inputs.publish }}
+          RECOVER_FAILED_UPLOAD: ${{ inputs.recover_failed_upload }}
         run: |
           if ($env:STORE_VERSION -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
             throw "Version must look like 1.5.16 (without the v prefix)."
+          }
+          if ($env:RECOVER_FAILED_UPLOAD -eq 'true' -and $env:PUBLISH_STORE -ne 'true') {
+            throw "recover_failed_upload requires publish=true."
           }
           "STORE_INSTALLER_URL=https://downloads.ceiling.win/releases/v$env:STORE_VERSION/Ceiling-$env:STORE_VERSION-Store-Setup.exe" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -108,6 +118,7 @@ jobs:
         shell: pwsh
         env:
           PARTNER_CENTER_PRODUCT_ID: ${{ vars.PARTNER_CENTER_PRODUCT_ID }}
+          RECOVER_FAILED_UPLOAD: ${{ inputs.recover_failed_upload }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:PARTNER_CENTER_PRODUCT_ID)) {
             throw "The store-validation environment is missing variable PARTNER_CENTER_PRODUCT_ID."
@@ -118,6 +129,9 @@ jobs:
           if ($statusExitCode -ne 0) {
             throw "Could not read Ceiling's current Microsoft Store submission status."
           }
+          & .\scripts\validate-store-submission-status.ps1 `
+            -StatusOutput $statusOutput `
+            -RecoverFailedUpload:($env:RECOVER_FAILED_UPLOAD -eq 'true')
 
       - name: Read and prepare current Store package
         shell: pwsh
@@ -145,9 +159,14 @@ jobs:
         shell: pwsh
         env:
           PARTNER_CENTER_PRODUCT_ID: ${{ vars.PARTNER_CENTER_PRODUCT_ID }}
+          RECOVER_FAILED_UPLOAD: ${{ inputs.recover_failed_upload }}
         run: |
           $package = Get-Content -LiteralPath $env:STORE_PACKAGE_PATH -Raw
-          msstore submission update $env:PARTNER_CENTER_PRODUCT_ID $package
+          if ($env:RECOVER_FAILED_UPLOAD -eq 'true') {
+            msstore submission update $env:PARTNER_CENTER_PRODUCT_ID $package --skipInitialPolling
+          } else {
+            msstore submission update $env:PARTNER_CENTER_PRODUCT_ID $package
+          }
           if ($LASTEXITCODE -ne 0) {
             throw "Microsoft Store package update failed."
           }

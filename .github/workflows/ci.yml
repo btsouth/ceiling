@@ -55,6 +55,9 @@ jobs:
       - name: Test Store submission preparation
         shell: pwsh
         run: .\scripts\ci\test-store-submission-preparation.ps1
+      - name: Test Store submission status handling
+        shell: pwsh
+        run: .\scripts\ci\test-store-submission-status.ps1
       - run: cargo test --manifest-path rust/Cargo.toml
       - run: cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
 
