@@ -10217,3 +10217,59 @@ body:has(.dashboard-shell) #root {
   font-size: 0.78rem;
   color: var(--text-secondary);
 }
+
+/* ── Root error boundary ─────────────────────────────────────────────
+   Painted when a surface throws during render. Fixed + opaque on purpose:
+   the flyout, main and float-bar windows are transparent, so an unmounted
+   tree would otherwise leave an invisible frame (#410). The card inside
+   reuses the shared `.panel.error` look; only the backdrop is new. */
+.error-boundary {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: safe center;
+  padding: 16px;
+  overflow: auto;
+  background: var(--app-bg);
+  color: var(--text-primary);
+  font-size: var(--font-body);
+  line-height: var(--line-tight);
+}
+.error-boundary p {
+  margin: 0 0 12px;
+  max-width: 48ch;
+}
+.error-boundary pre {
+  margin: 0 0 12px;
+  max-height: 40vh;
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--control-border);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  font-size: var(--font-footnote);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.error-boundary__actions {
+  display: flex;
+  gap: 8px;
+}
+/* The flyout is built 344x174 and only grows once its surface lays out —
+   which never happens when that surface is the thing that threw. Keep the
+   essentials reachable at that height. */
+@media (max-height: 260px) {
+  .error-boundary {
+    padding: 8px;
+  }
+  .error-boundary .panel {
+    padding: 10px 12px;
+  }
+  .error-boundary h2 {
+    margin-bottom: 8px;
+  }
+  .error-boundary p {
+    display: none;
+  }
+}

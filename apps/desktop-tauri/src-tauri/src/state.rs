@@ -159,8 +159,10 @@ pub struct AppState {
     pub suppress_geometry_capture_until: Option<std::time::Instant>,
     /// Whether the explicit startup path may use its delayed shell fallback.
     pub startup_tray_reveal_pending: bool,
-    /// One-shot permission for frontend layout code to reveal a newly opened flyout.
-    pub flyout_reveal_pending: bool,
+    /// One-shot permission for frontend layout code to reveal a newly opened
+    /// flyout, stamped with when it was armed so `flyout_window::open_or_focus`
+    /// can stop waiting for a reveal that never comes.
+    pub flyout_reveal_armed_at: Option<std::time::Instant>,
     /// Active while a user gesture (resize drag, HTML5 drag-reorder) is
     /// running a Win32 modal loop that transiently steals focus from the
     /// WebView2 child. `(began, until)` — `until` is the hard expiry;
@@ -212,7 +214,7 @@ impl AppState {
             startup_tray_blur_grace_until: None,
             suppress_geometry_capture_until: None,
             startup_tray_reveal_pending: false,
-            flyout_reveal_pending: false,
+            flyout_reveal_armed_at: None,
             gesture_blur_guard: None,
         }
     }
@@ -273,16 +275,37 @@ impl AppState {
         std::mem::take(&mut self.startup_tray_reveal_pending)
     }
 
-    pub fn arm_flyout_reveal(&mut self) {
-        self.flyout_reveal_pending = true;
+    pub fn arm_flyout_reveal(&mut self, now: std::time::Instant) {
+        self.flyout_reveal_armed_at = Some(now);
+    }
+
+    /// Restart the reveal clock without re-arming: a no-op once the reveal
+    /// has been consumed. The flag is armed before the flyout's blocking
+    /// `build()` so a reveal landing mid-build is not dropped, but the
+    /// overdue check must not count build time, or a slow first build would
+    /// route the very next open to `Show` and paint the pre-layout frame.
+    pub fn restamp_flyout_reveal(&mut self, now: std::time::Instant) {
+        if let Some(armed_at) = &mut self.flyout_reveal_armed_at {
+            *armed_at = now;
+        }
+    }
+
+    /// Non-consuming peek used by `flyout_window::open_or_focus`: how long
+    /// the armed reveal has been outstanding, or `None` when none is armed.
+    pub fn flyout_reveal_pending_for(
+        &self,
+        now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        self.flyout_reveal_armed_at
+            .map(|armed_at| now.saturating_duration_since(armed_at))
     }
 
     pub fn clear_flyout_reveal(&mut self) {
-        self.flyout_reveal_pending = false;
+        self.flyout_reveal_armed_at = None;
     }
 
     pub fn take_pending_flyout_reveal(&mut self) -> bool {
-        std::mem::take(&mut self.flyout_reveal_pending)
+        self.flyout_reveal_armed_at.take().is_some()
     }
 
     /// Arm the gesture blur guard for 15s. Called when the frontend reports
@@ -528,10 +551,66 @@ mod tests {
     }
 
     #[test]
+    fn pending_flyout_reveal_can_be_observed_without_consuming() {
+        let mut state = AppState::new();
+        let armed_at = std::time::Instant::now();
+        assert_eq!(state.flyout_reveal_pending_for(armed_at), None);
+
+        state.arm_flyout_reveal(armed_at);
+
+        let later = armed_at + std::time::Duration::from_millis(250);
+        assert_eq!(
+            state.flyout_reveal_pending_for(later),
+            Some(std::time::Duration::from_millis(250))
+        );
+        // Peeking twice must not consume it.
+        assert_eq!(
+            state.flyout_reveal_pending_for(later),
+            Some(std::time::Duration::from_millis(250))
+        );
+        assert!(state.take_pending_flyout_reveal());
+        assert_eq!(state.flyout_reveal_pending_for(later), None);
+    }
+
+    #[test]
+    fn restamping_a_pending_flyout_reveal_restarts_its_clock() {
+        // Armed before a 2 s build: the overdue check must see only the
+        // time since the build finished, not the build itself.
+        let mut state = AppState::new();
+        let armed_at = std::time::Instant::now();
+        state.arm_flyout_reveal(armed_at);
+
+        let built_at = armed_at + std::time::Duration::from_secs(2);
+        state.restamp_flyout_reveal(built_at);
+
+        let later = built_at + std::time::Duration::from_millis(100);
+        assert_eq!(
+            state.flyout_reveal_pending_for(later),
+            Some(std::time::Duration::from_millis(100))
+        );
+    }
+
+    #[test]
+    fn restamping_never_re_arms_a_consumed_flyout_reveal() {
+        // A reveal that landed during the build has already been taken; a
+        // re-arm here would leave a flag nothing consumes, and the next open
+        // would wait on it for the whole grace.
+        let mut state = AppState::new();
+        let armed_at = std::time::Instant::now();
+        state.arm_flyout_reveal(armed_at);
+        assert!(state.take_pending_flyout_reveal());
+
+        state.restamp_flyout_reveal(armed_at + std::time::Duration::from_secs(2));
+
+        assert_eq!(state.flyout_reveal_pending_for(armed_at), None);
+        assert!(!state.take_pending_flyout_reveal());
+    }
+
+    #[test]
     fn pending_flyout_reveal_is_consumed_once() {
         let mut state = AppState::new();
 
-        state.arm_flyout_reveal();
+        state.arm_flyout_reveal(std::time::Instant::now());
 
         assert!(state.take_pending_flyout_reveal());
         assert!(!state.take_pending_flyout_reveal());
@@ -541,7 +620,7 @@ mod tests {
     fn pending_flyout_reveal_can_be_cleared_without_revealing() {
         let mut state = AppState::new();
 
-        state.arm_flyout_reveal();
+        state.arm_flyout_reveal(std::time::Instant::now());
         state.clear_flyout_reveal();
 
         assert!(!state.take_pending_flyout_reveal());
