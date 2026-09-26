@@ -7,7 +7,7 @@ import {
   type MockInstance,
   vi,
 } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { StrictMode } from "react";
 import ErrorBoundary, { describeThrown } from "./ErrorBoundary";
 import { expectNoAccessibilityViolations } from "../test/accessibility";
@@ -20,9 +20,23 @@ vi.mock("@tauri-apps/api/webviewWindow", () => ({
 
 const tauriMocks = vi.hoisted(() => ({
   revealTrayPanelWindow: vi.fn(() => Promise.resolve()),
+  revealReadyWindow: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("../lib/tauri", () => tauriMocks);
+
+function mockPaintFrames() {
+  const frames: FrameRequestCallback[] = [];
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    frames.push(callback);
+    return frames.length;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+  return () => {
+    const pending = frames.splice(0);
+    act(() => pending.forEach((callback) => callback(0)));
+  };
+}
 
 function Thrower({ value }: { value: unknown }): never {
   throw value;
@@ -47,6 +61,7 @@ describe("ErrorBoundary", () => {
   beforeEach(() => {
     webviewWindowMocks.label = "main";
     tauriMocks.revealTrayPanelWindow.mockClear();
+    tauriMocks.revealReadyWindow.mockClear();
     // React logs the caught error and its stack on its own; keep test output
     // readable while still asserting the boundary's own report below.
     consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -54,6 +69,7 @@ describe("ErrorBoundary", () => {
 
   afterEach(() => {
     consoleError.mockRestore();
+    vi.restoreAllMocks();
   });
 
   it("renders its children when nothing throws", () => {
@@ -199,6 +215,7 @@ describe("ErrorBoundary", () => {
 
   it("asks the shell to reveal the flyout so the fallback is not painted into a hidden window", () => {
     webviewWindowMocks.label = "flyout";
+    const paintFrame = mockPaintFrames();
 
     render(
       <ErrorBoundary>
@@ -206,11 +223,15 @@ describe("ErrorBoundary", () => {
       </ErrorBoundary>,
     );
 
+    expect(tauriMocks.revealTrayPanelWindow).not.toHaveBeenCalled();
+    paintFrame();
+    paintFrame();
     expect(tauriMocks.revealTrayPanelWindow).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves other windows alone — their shells show them from Rust", () => {
+  it("reveals the main or Settings fallback when either first layout fails", () => {
     webviewWindowMocks.label = "settings";
+    const paintFrame = mockPaintFrames();
 
     render(
       <ErrorBoundary>
@@ -218,6 +239,10 @@ describe("ErrorBoundary", () => {
       </ErrorBoundary>,
     );
 
+    expect(tauriMocks.revealReadyWindow).not.toHaveBeenCalled();
+    paintFrame();
+    paintFrame();
+    expect(tauriMocks.revealReadyWindow).toHaveBeenCalledTimes(1);
     expect(tauriMocks.revealTrayPanelWindow).not.toHaveBeenCalled();
   });
 

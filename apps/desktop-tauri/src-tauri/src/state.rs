@@ -112,6 +112,20 @@ pub struct TrayAnchor {
     pub height: u32,
 }
 
+/// Windows whose first visible frame is released by their frontend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevealWindow {
+    Main,
+    Settings,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PendingWindowReveal {
+    armed_at: std::time::Instant,
+    frontend_ready: bool,
+    native_ready: bool,
+}
+
 /// Central app state behind `Mutex` for Tauri managed state.
 ///
 /// Access in commands via `state: tauri::State<'_, SharedAppState>`.
@@ -163,6 +177,9 @@ pub struct AppState {
     /// flyout, stamped with when it was armed so `flyout_window::open_or_focus`
     /// can stop waiting for a reveal that never comes.
     pub flyout_reveal_armed_at: Option<std::time::Instant>,
+    /// First layout must complete before these windows become visible.
+    main_reveal: Option<PendingWindowReveal>,
+    settings_reveal: Option<PendingWindowReveal>,
     /// Active while a user gesture (resize drag, HTML5 drag-reorder) is
     /// running a Win32 modal loop that transiently steals focus from the
     /// WebView2 child. `(began, until)` — `until` is the hard expiry;
@@ -215,6 +232,8 @@ impl AppState {
             suppress_geometry_capture_until: None,
             startup_tray_reveal_pending: false,
             flyout_reveal_armed_at: None,
+            main_reveal: None,
+            settings_reveal: None,
             gesture_blur_guard: None,
         }
     }
@@ -308,6 +327,77 @@ impl AppState {
         self.flyout_reveal_armed_at.take().is_some()
     }
 
+    fn window_reveal_slot(&mut self, window: RevealWindow) -> &mut Option<PendingWindowReveal> {
+        match window {
+            RevealWindow::Main => &mut self.main_reveal,
+            RevealWindow::Settings => &mut self.settings_reveal,
+        }
+    }
+
+    pub fn arm_window_reveal(
+        &mut self,
+        window: RevealWindow,
+        now: std::time::Instant,
+        native_ready: bool,
+    ) {
+        *self.window_reveal_slot(window) = Some(PendingWindowReveal {
+            armed_at: now,
+            frontend_ready: false,
+            native_ready,
+        });
+    }
+
+    pub fn window_reveal_pending_for(
+        &self,
+        window: RevealWindow,
+        now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        let pending = match window {
+            RevealWindow::Main => self.main_reveal,
+            RevealWindow::Settings => self.settings_reveal,
+        };
+        pending.map(|pending| now.saturating_duration_since(pending.armed_at))
+    }
+
+    pub fn window_reveal_is_native_ready(&self, window: RevealWindow) -> bool {
+        match window {
+            RevealWindow::Main => self.main_reveal,
+            RevealWindow::Settings => self.settings_reveal,
+        }
+        .is_some_and(|pending| pending.native_ready)
+    }
+
+    /// Return true only when both sides have reached the reveal point.
+    pub fn mark_window_frontend_ready(&mut self, window: RevealWindow) -> bool {
+        let slot = self.window_reveal_slot(window);
+        if let Some(pending) = slot {
+            pending.frontend_ready = true;
+            if pending.native_ready {
+                *slot = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Finish a native build without losing an early frontend ready signal.
+    pub fn mark_window_native_ready(&mut self, window: RevealWindow) -> bool {
+        let slot = self.window_reveal_slot(window);
+        if let Some(pending) = slot {
+            pending.native_ready = true;
+            pending.armed_at = std::time::Instant::now();
+            if pending.frontend_ready {
+                *slot = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn take_window_reveal(&mut self, window: RevealWindow) -> bool {
+        self.window_reveal_slot(window).take().is_some()
+    }
+
     /// Arm the gesture blur guard for 15s. Called when the frontend reports
     /// a resize-grip press or a drag-reorder mousedown is about to start a
     /// Win32/OLE modal loop that will transiently blur the window.
@@ -384,7 +474,7 @@ impl AppState {
 /// The type registered as Tauri managed state.
 #[cfg(test)]
 mod tests {
-    use super::AppState;
+    use super::{AppState, RevealWindow};
     use crate::surface::SurfaceMode;
     use crate::surface_target::SurfaceTarget;
 
@@ -548,6 +638,39 @@ mod tests {
         let mut state = AppState::new();
 
         assert!(!state.take_pending_flyout_reveal());
+    }
+
+    #[test]
+    fn main_reveals_only_after_its_frontend_is_ready() {
+        let mut state = AppState::new();
+        state.arm_window_reveal(RevealWindow::Main, std::time::Instant::now(), true);
+
+        assert!(state.window_reveal_is_native_ready(RevealWindow::Main));
+        assert!(state.mark_window_frontend_ready(RevealWindow::Main));
+        assert!(!state.mark_window_frontend_ready(RevealWindow::Main));
+    }
+
+    #[test]
+    fn settings_keeps_an_early_frontend_signal_until_native_setup_finishes() {
+        let mut state = AppState::new();
+        state.arm_window_reveal(RevealWindow::Settings, std::time::Instant::now(), false);
+
+        assert!(!state.mark_window_frontend_ready(RevealWindow::Settings));
+        assert!(state.mark_window_native_ready(RevealWindow::Settings));
+        assert!(!state.mark_window_native_ready(RevealWindow::Settings));
+    }
+
+    #[test]
+    fn window_reveal_tokens_are_independent_and_cancelable() {
+        let mut state = AppState::new();
+        let now = std::time::Instant::now();
+        state.arm_window_reveal(RevealWindow::Main, now, true);
+        state.arm_window_reveal(RevealWindow::Settings, now, false);
+
+        assert!(state.take_window_reveal(RevealWindow::Main));
+        assert!(!state.mark_window_frontend_ready(RevealWindow::Main));
+        assert!(!state.mark_window_frontend_ready(RevealWindow::Settings));
+        assert!(state.mark_window_native_ready(RevealWindow::Settings));
     }
 
     #[test]

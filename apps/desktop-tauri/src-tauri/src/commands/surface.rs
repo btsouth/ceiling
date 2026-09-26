@@ -112,6 +112,14 @@ pub fn reveal_tray_panel_window(
     Ok(())
 }
 
+/// Reveal `main` or detached Settings once its frontend has painted a layout.
+/// The calling WebView supplies its own label, so it cannot reveal another
+/// window; repeated signals are harmless after the one-shot token is used.
+#[tauri::command]
+pub fn reveal_ready_window(window: tauri::WebviewWindow) -> Result<(), String> {
+    crate::shell::window_reveal::frontend_ready(window.app_handle(), &window)
+}
+
 #[tauri::command]
 pub fn close_settings_window(
     app: tauri::AppHandle,

@@ -15,6 +15,7 @@ mod transition;
 pub(crate) mod webview_lifecycle;
 mod window;
 pub(crate) mod window_recovery;
+pub(crate) mod window_reveal;
 
 #[cfg(test)]
 mod tests;

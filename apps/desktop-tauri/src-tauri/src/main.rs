@@ -155,6 +155,7 @@ fn main() {
             commands::begin_flyout_gesture,
             commands::end_flyout_gesture,
             commands::reveal_tray_panel_window,
+            commands::reveal_ready_window,
             commands::open_settings_window,
             commands::open_flyout_window,
             commands::close_settings_window,

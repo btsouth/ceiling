@@ -12,6 +12,7 @@ import { useSurfaceSnapshot } from "./hooks/useSurfaceSnapshot";
 import { useTheme } from "./hooks/useTheme";
 import TrayPanel from "./surfaces/TrayPanel";
 import TaskbarFlyout from "./surfaces/TaskbarFlyout";
+import RevealAfterPaint from "./components/RevealAfterPaint";
 import { FLOATBAR_WINDOW_LABEL } from "./floatbar/api";
 import { LocaleProvider } from "./i18n/LocaleProvider";
 import type { BootstrapState, ThemePreference } from "./types/bridge";
@@ -138,7 +139,7 @@ function AppInner() {
   }, [auxiliaryWindow, reloadBootstrapState]);
 
   if (error) {
-    return (
+    const content = (
       <main className="shell">
         <section className="panel error">
           <h2>Bootstrap failed</h2>
@@ -146,6 +147,9 @@ function AppInner() {
         </section>
       </main>
     );
+    return isSettingsWindow() || surface.mode !== "hidden"
+      ? <RevealAfterPaint>{content}</RevealAfterPaint>
+      : content;
   }
 
   if (!state) {
@@ -194,7 +198,7 @@ function SurfaceRouter({
     case "hidden":
       return null;
     case "trayPanel":
-      return <TrayPanel state={state} />;
+      return <RevealAfterPaint><TrayPanel state={state} /></RevealAfterPaint>;
     case "popOut": {
       const providerId =
         surface.target.kind === "provider"
@@ -202,18 +206,18 @@ function SurfaceRouter({
           : undefined;
       return (
         <Suspense fallback={<SurfaceFallback />}>
-          <PopOutPanel state={state} providerId={providerId} />
+          <RevealAfterPaint><PopOutPanel state={state} providerId={providerId} /></RevealAfterPaint>
         </Suspense>
       );
     }
     case "settings":
       return (
         <Suspense fallback={<SurfaceFallback />}>
-          <SettingsLayout state={state} />
+          <RevealAfterPaint><SettingsLayout state={state} /></RevealAfterPaint>
         </Suspense>
       );
     default:
-      return <TrayPanel state={state} />;
+      return <RevealAfterPaint><TrayPanel state={state} /></RevealAfterPaint>;
   }
 }
 
@@ -241,9 +245,11 @@ function DetachedSettingsApp({ state }: { state: BootstrapState }) {
 
   return (
     <Suspense fallback={<SurfaceFallback />}>
-      <main className="settings-surface settings-surface--full">
-        <Settings state={state} initialTab={tab} />
-      </main>
+      <RevealAfterPaint>
+        <main className="settings-surface settings-surface--full">
+          <Settings state={state} initialTab={tab} />
+        </main>
+      </RevealAfterPaint>
     </Suspense>
   );
 }

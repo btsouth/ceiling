@@ -9,6 +9,7 @@ use tauri::{AppHandle, Manager, WebviewWindow};
 use crate::events;
 use crate::proof_harness;
 use crate::state::AppState;
+use crate::state::RevealWindow;
 use crate::surface::{SurfaceMode, SurfaceTransition, WindowProperties};
 use crate::surface_target::SurfaceTarget;
 use crate::window_positioner::{self, PanelSize, Rect};
@@ -584,7 +585,10 @@ fn apply_same_mode_target_update(
         },
     )?;
     events::emit_surface_mode_changed(app, mode, mode, target);
-    if show_window(window).is_ok() && mode == SurfaceMode::TrayPanel {
+    if !super::window_reveal::should_defer(app, RevealWindow::Main)
+        && show_window(window).is_ok()
+        && mode == SurfaceMode::TrayPanel
+    {
         mark_tray_panel_shown(app);
     }
     proof_harness::sync_after_surface_transition(app);
@@ -607,24 +611,31 @@ pub(super) fn apply_transition(
     // making the window visible yet.
     match apply_window_layout(window, transition.to, &transition.properties) {
         Ok(needs_show) => {
+            let first_reveal = transition.from == SurfaceMode::Hidden && needs_show;
+            if first_reveal {
+                super::window_reveal::arm(app, RevealWindow::Main, true)?;
+            } else if !needs_show {
+                super::window_reveal::cancel(app, RevealWindow::Main);
+            }
             // Phase 2: commit state + emit event so the React frontend can
             // start rendering the correct surface BEFORE the window appears.
-            commit_surface_snapshot(
+            if let Err(error) = commit_surface_snapshot(
                 app,
                 &SurfaceSnapshot {
                     mode: transition.to,
                     target: current_target.clone(),
                 },
-            )?;
+            ) {
+                if first_reveal {
+                    super::window_reveal::cancel(app, RevealWindow::Main);
+                }
+                return Err(error);
+            }
             events::emit_surface_mode_changed(app, transition.from, transition.to, current_target);
 
-            // Phase 3: now make the window visible. (The flyout's own
-            // "revealed by the frontend after first layout" behavior lives
-            // entirely in `shell::flyout_window` + the frontend's
-            // `useTrayPanelLayout` now — `main`'s transitions here can only
-            // ever target Hidden/PopOut/Settings, none of which defer their
-            // own reveal.)
-            if needs_show {
+            // A first open waits for the frontend's first layout. A repeat
+            // open can show after the grace period if that signal never came.
+            if needs_show && !super::window_reveal::should_defer(app, RevealWindow::Main) {
                 let _ = show_window(window);
             }
             clamp_current_window_to_work_area(window);
@@ -633,6 +644,7 @@ pub(super) fn apply_transition(
             Ok(transition.to)
         }
         Err(err) => {
+            super::window_reveal::cancel(app, RevealWindow::Main);
             let recovery =
                 recovery_snapshot_for_failed_transition(transition, previous, &current_target);
             if let Err(recovery_err) = restore_recovery_surface(&recovery, |mode, properties| {
