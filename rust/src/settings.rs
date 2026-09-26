@@ -73,10 +73,20 @@ fn start_at_login_path_key(path: &std::path::Path) -> String {
         .to_ascii_lowercase()
 }
 
+/// Where start at login lives. The uninstaller removes this value when it
+/// still points at the installed copy, so rust/installer/codexbar.iss uses the
+/// same key, name, and binaries.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const START_AT_LOGIN_RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const START_AT_LOGIN_RUN_VALUE: &str = "Ceiling";
+const START_AT_LOGIN_BINARY_NAMES: [&str; 3] =
+    ["ceiling.exe", "codexbar-cli.exe", "codexbar-desktop.exe"];
+
 fn is_start_at_login_binary_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case("ceiling.exe")
-        || name.eq_ignore_ascii_case("codexbar-cli.exe")
-        || name.eq_ignore_ascii_case("codexbar-desktop.exe")
+    START_AT_LOGIN_BINARY_NAMES
+        .iter()
+        .any(|binary| name.eq_ignore_ascii_case(binary))
 }
 
 fn owns_start_at_login_entry(existing_exe: &std::path::Path, intended: &std::path::Path) -> bool {
@@ -1177,23 +1187,22 @@ impl Settings {
         use winreg::enums::*;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let run_key = hkcu.open_subkey_with_flags(
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
-            KEY_READ | KEY_WRITE,
-        )?;
+        let run_key = hkcu.open_subkey_with_flags(START_AT_LOGIN_RUN_KEY, KEY_READ | KEY_WRITE)?;
 
         if enabled {
             let exe_path = std::env::current_exe()?;
             let command = Self::start_at_login_command(&exe_path);
-            run_key.set_value("Ceiling", &command)?;
+            run_key.set_value(START_AT_LOGIN_RUN_VALUE, &command)?;
         } else {
-            let existing = run_key.get_value::<String, _>("Ceiling").ok();
+            let existing = run_key
+                .get_value::<String, _>(START_AT_LOGIN_RUN_VALUE)
+                .ok();
             let current_exe = std::env::current_exe()?;
             if existing
                 .as_deref()
                 .is_some_and(|command| Self::start_at_login_command_is_owned(command, &current_exe))
             {
-                let _ = run_key.delete_value("Ceiling");
+                let _ = run_key.delete_value(START_AT_LOGIN_RUN_VALUE);
             }
         }
 
@@ -1206,14 +1215,12 @@ impl Settings {
         use winreg::enums::*;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        let Ok(run_key) = hkcu.open_subkey_with_flags(
-            r"Software\Microsoft\Windows\CurrentVersion\Run",
-            KEY_READ | KEY_WRITE,
-        ) else {
+        let Ok(run_key) = hkcu.open_subkey_with_flags(START_AT_LOGIN_RUN_KEY, KEY_READ | KEY_WRITE)
+        else {
             return false;
         };
 
-        let Ok(existing) = run_key.get_value::<String, _>("Ceiling") else {
+        let Ok(existing) = run_key.get_value::<String, _>(START_AT_LOGIN_RUN_VALUE) else {
             return false;
         };
 
@@ -1231,7 +1238,7 @@ impl Settings {
         }
         if Self::start_at_login_command_needs_repair(&existing, &exe_path) {
             let command = Self::start_at_login_command(&exe_path);
-            if let Err(error) = run_key.set_value("Ceiling", &command) {
+            if let Err(error) = run_key.set_value(START_AT_LOGIN_RUN_VALUE, &command) {
                 tracing::warn!("Failed to repair Ceiling start-at-login command: {error}");
             }
         }
@@ -1258,8 +1265,10 @@ impl Settings {
         use winreg::enums::*;
 
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        if let Ok(run_key) = hkcu.open_subkey(r"Software\Microsoft\Windows\CurrentVersion\Run") {
-            let existing = run_key.get_value::<String, _>("Ceiling").ok();
+        if let Ok(run_key) = hkcu.open_subkey(START_AT_LOGIN_RUN_KEY) {
+            let existing = run_key
+                .get_value::<String, _>(START_AT_LOGIN_RUN_VALUE)
+                .ok();
             let current_exe = std::env::current_exe().ok();
             existing
                 .zip(current_exe)
