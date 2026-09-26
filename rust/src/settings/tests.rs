@@ -2093,3 +2093,29 @@ fn incident_badge_copy_does_not_claim_it_is_the_only_non_provider_outbound() {
         "privacy page must name GitHub as the update-check host, in those words"
     );
 }
+
+/// The uninstaller deletes Run\Ceiling only when it still points at the
+/// installed copy. If the two sides disagree on the key, the value name, or
+/// which binaries count as Ceiling, uninstall silently leaves an autostart
+/// entry behind that launches a missing executable at every sign-in.
+#[test]
+fn test_uninstaller_matches_the_start_at_login_value() {
+    let script = include_str!("../../installer/codexbar.iss");
+
+    assert!(
+        script.contains(&format!("StartAtLoginRunKey = '{START_AT_LOGIN_RUN_KEY}';")),
+        "installer no longer cleans up {START_AT_LOGIN_RUN_KEY}"
+    );
+    assert!(
+        script.contains(&format!(
+            "StartAtLoginRunValue = '{START_AT_LOGIN_RUN_VALUE}';"
+        )),
+        "installer no longer cleans up the {START_AT_LOGIN_RUN_VALUE} Run value"
+    );
+    for binary in START_AT_LOGIN_BINARY_NAMES {
+        assert!(
+            script.contains(&format!("(Name = '{binary}')")),
+            "installer does not treat {binary} as an installed Ceiling binary"
+        );
+    }
+}

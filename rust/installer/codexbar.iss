@@ -77,7 +77,19 @@ Name: "{autodesktop}\Ceiling"; Filename: "{app}\ceiling.exe"; Parameters: "menub
 [Run]
 Filename: "{app}\ceiling.exe"; Parameters: "menubar"; Description: "Launch Ceiling"; Flags: nowait postinstall skipifsilent; Check: CanLaunchCeiling
 
+; Inno only removes {app} when its own bookkeeping says the directory is
+; empty; this also covers a directory left behind after a file that was
+; locked during uninstall.
+[UninstallDelete]
+Type: dirifempty; Name: "{app}"
+
 [Code]
+const
+  // Must match the value rust/src/settings.rs writes for start at login.
+  // The test in rust/src/settings/tests.rs asserts the two stay equal.
+  StartAtLoginRunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+  StartAtLoginRunValue = 'Ceiling';
+
 var
   NeedsVCRedistRestart: Boolean;
   NeedsWebView2Restart: Boolean;
@@ -221,4 +233,159 @@ end;
 function CanLaunchCeiling(): Boolean;
 begin
   Result := not NeedsVCRedistRestart and not NeedsWebView2Restart;
+end;
+
+function NormalizedPath(Path: String): String;
+begin
+  Result := Trim(Path);
+  StringChangeEx(Result, '/', '\', True);
+  while (Length(Result) > 0) and (Result[Length(Result)] = '\') do
+    Delete(Result, Length(Result), 1);
+  Result := Lowercase(Result);
+end;
+
+// True for a binary this installation owns. Mirrors
+// is_start_at_login_binary_name in rust/src/settings.rs, including the
+// legacy codexbar-desktop.exe name an older build may have written to Run.
+function IsInstalledCeilingBinary(Path: String): Boolean;
+var
+  Name: String;
+begin
+  Name := Lowercase(ExtractFileName(Path));
+  Result :=
+    ((Name = 'ceiling.exe') or (Name = 'codexbar-cli.exe') or (Name = 'codexbar-desktop.exe')) and
+    (NormalizedPath(ExtractFileDir(Path)) = NormalizedPath(ExpandConstant('{app}')));
+end;
+
+// Split a Run command into its executable and arguments the same way
+// parse_start_at_login_command in rust/src/settings.rs does: a quoted path,
+// or an unquoted one ending at the first ".exe" followed by whitespace.
+function SplitRunCommand(Command: String; var Executable, Arguments: String): Boolean;
+var
+  Lowered: String;
+  Offset, Found, ExeEnd: Integer;
+begin
+  Result := False;
+  Command := Trim(Command);
+  if Command = '' then
+    exit;
+
+  if Command[1] = '"' then begin
+    Delete(Command, 1, 1);
+    Found := Pos('"', Command);
+    if Found <= 1 then
+      exit;
+    Executable := Copy(Command, 1, Found - 1);
+    Arguments := Copy(Command, Found + 1, Length(Command) - Found);
+    Result := True;
+    exit;
+  end;
+
+  Lowered := Lowercase(Command);
+  Offset := 0;
+  while True do begin
+    Found := Pos('.exe', Copy(Lowered, Offset + 1, Length(Lowered) - Offset));
+    if Found = 0 then
+      exit;
+    ExeEnd := Offset + Found + 3;
+    if (ExeEnd = Length(Command)) or (Command[ExeEnd + 1] <= ' ') then begin
+      Executable := Copy(Command, 1, ExeEnd);
+      Arguments := Copy(Command, ExeEnd + 1, Length(Command) - ExeEnd);
+      Result := True;
+      exit;
+    end;
+    Offset := Offset + Found;
+  end;
+end;
+
+// Ceiling writes Run\Ceiling as the bare quoted path of its executable.
+// Anything else is left alone: a value pointing at another copy (a portable
+// Ceiling, a different install directory, another app) or one the user has
+// edited to add arguments no longer belongs to this installation.
+function IsOwnedStartAtLoginCommand(Command: String): Boolean;
+var
+  Executable, Arguments: String;
+begin
+  Result :=
+    SplitRunCommand(Command, Executable, Arguments) and
+    (Trim(Arguments) = '') and
+    IsInstalledCeilingBinary(Executable);
+end;
+
+procedure RemoveOwnedStartAtLoginValue();
+var
+  Command: String;
+begin
+  if not RegQueryStringValue(HKCU, StartAtLoginRunKey, StartAtLoginRunValue, Command) then
+    exit;
+
+  if not IsOwnedStartAtLoginCommand(Command) then begin
+    Log('Keeping Run\' + StartAtLoginRunValue + ' because it does not belong to this installation: ' + Command);
+    exit;
+  end;
+
+  if RegDeleteValue(HKCU, StartAtLoginRunKey, StartAtLoginRunValue) then
+    Log('Removed Run\' + StartAtLoginRunValue + ': ' + Command)
+  else
+    Log('Could not remove Run\' + StartAtLoginRunValue + ': ' + Command);
+end;
+
+// Count this installation's running binaries, terminating each one when
+// Terminate is set. A process started from another directory, such as a
+// portable copy, is never touched.
+function RunningInstalledBinaries(Service: Variant; Terminate: Boolean): Integer;
+var
+  Processes, Process: Variant;
+  Index: Integer;
+begin
+  Result := 0;
+  Processes := Service.ExecQuery(
+    'SELECT ProcessId, ExecutablePath FROM Win32_Process ' +
+    'WHERE Name = ''ceiling.exe'' OR Name = ''codexbar-cli.exe''');
+  for Index := 0 to Processes.Count - 1 do begin
+    Process := Processes.ItemIndex(Index);
+    if VarIsNull(Process.ExecutablePath) or not IsInstalledCeilingBinary(Process.ExecutablePath) then
+      continue;
+    Result := Result + 1;
+    if Terminate then begin
+      Log('Stopping ' + Process.ExecutablePath + ' (PID ' + IntToStr(Process.ProcessId) + ')');
+      try
+        Process.Terminate();
+      except
+        // Already exiting; the wait below confirms it is gone.
+        Log('Terminate failed: ' + GetExceptionMessage());
+      end;
+    end;
+  end;
+end;
+
+// A running Ceiling holds ceiling.exe open, so the uninstaller could not
+// delete it and the Run value kept launching it at the next sign-in.
+procedure StopRunningCeiling();
+var
+  Locator, Service: Variant;
+  Attempt: Integer;
+begin
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Service := Locator.ConnectServer('.', 'root\CIMV2');
+    if RunningInstalledBinaries(Service, True) = 0 then
+      exit;
+    for Attempt := 1 to 40 do begin
+      Sleep(250);
+      if RunningInstalledBinaries(Service, False) = 0 then
+        exit;
+    end;
+    Log('Ceiling is still running; its files may not be removed.');
+  except
+    Log('Could not stop Ceiling: ' + GetExceptionMessage());
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then begin
+    StopRunningCeiling();
+    RemoveOwnedStartAtLoginValue();
+  end;
 end;
