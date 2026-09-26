@@ -10,12 +10,18 @@ const t = (key: LocaleKey): string => {
       return "Never";
     case "UpdatedJustNow":
       return "just now";
+    case "UpdatedMinuteAgo":
+      return "{} minute ago";
     case "UpdatedMinutesAgo":
-      return "{} min ago";
+      return "{} minutes ago";
+    case "UpdatedHourAgo":
+      return "{} hour ago";
     case "UpdatedHoursAgo":
-      return "{} hr ago";
+      return "{} hours ago";
+    case "UpdatedDayAgo":
+      return "{} day ago";
     case "UpdatedDaysAgo":
-      return "{} d ago";
+      return "{} days ago";
     default:
       return key;
   }
@@ -39,28 +45,45 @@ describe("formatRelativeUpdated", () => {
   });
 
   it("renders minutes for sub-hour diffs", () => {
-    expect(formatRelativeUpdated(NOW - 5 * 60_000, t, NOW)).toBe("5 min ago");
-    expect(formatRelativeUpdated(NOW - 59 * 60_000, t, NOW)).toBe("59 min ago");
+    expect(formatRelativeUpdated(NOW - 2 * 60_000, t, NOW)).toBe(
+      "2 minutes ago",
+    );
+    expect(formatRelativeUpdated(NOW - 59 * 60_000, t, NOW)).toBe(
+      "59 minutes ago",
+    );
+  });
+
+  it("uses the singular for exactly one minute", () => {
+    expect(formatRelativeUpdated(NOW - 60_000, t, NOW)).toBe("1 minute ago");
+    expect(formatRelativeUpdated(NOW - 119_000, t, NOW)).toBe("1 minute ago");
+    expect(formatRelativeUpdated(NOW - 120_000, t, NOW)).toBe("2 minutes ago");
   });
 
   it("renders hours for sub-day diffs", () => {
-    expect(formatRelativeUpdated(NOW - 60 * 60_000, t, NOW)).toBe("1 hr ago");
+    expect(formatRelativeUpdated(NOW - 60 * 60_000, t, NOW)).toBe(
+      "1 hour ago",
+    );
+    expect(formatRelativeUpdated(NOW - 119 * 60_000, t, NOW)).toBe(
+      "1 hour ago",
+    );
     expect(formatRelativeUpdated(NOW - 23 * 3600_000, t, NOW)).toBe(
-      "23 hr ago",
+      "23 hours ago",
     );
   });
 
   it("renders days beyond 24h", () => {
-    expect(formatRelativeUpdated(NOW - 24 * 3600_000, t, NOW)).toBe("1 d ago");
+    expect(formatRelativeUpdated(NOW - 24 * 3600_000, t, NOW)).toBe(
+      "1 day ago",
+    );
     expect(formatRelativeUpdated(NOW - 9 * 24 * 3600_000, t, NOW)).toBe(
-      "9 d ago",
+      "9 days ago",
     );
   });
 
   it("defaults `nowMs` to Date.now()", () => {
     const spy = vi.spyOn(Date, "now").mockReturnValue(NOW);
     try {
-      expect(formatRelativeUpdated(NOW - 120_000, t)).toBe("2 min ago");
+      expect(formatRelativeUpdated(NOW - 120_000, t)).toBe("2 minutes ago");
     } finally {
       spy.mockRestore();
     }

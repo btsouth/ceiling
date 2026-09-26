@@ -60,6 +60,17 @@ struct WidgetModel {
     open_on_hover: bool,
 }
 
+/// Whether moving the strip to `next` has to repaint it in full.
+///
+/// Tiles are laid out from the client width at paint time, but a resize only
+/// invalidates the pixels it newly exposes. A strip that shrank because Start
+/// moved left kept its wider layout and lost the end of the last tile at the
+/// new edge ("Usa" instead of "Usage"); one that grew painted new tiles beside
+/// stale ones. A pure move keeps the same client area, so its paint stays valid.
+fn placement_needs_repaint(previous: Option<ChildPlacement>, next: ChildPlacement) -> bool {
+    previous.is_none_or(|previous| previous.width != next.width || previous.height != next.height)
+}
+
 fn centered_content_x(item_left: i32, item_width: i32, content_width: i32) -> i32 {
     item_left.saturating_add(item_width.saturating_sub(content_width).max(0) / 2)
 }
@@ -935,6 +946,8 @@ mod windows_host {
     struct HostedWidget {
         hwnd: isize,
         taskbar: isize,
+        /// Last placement applied to `hwnd`; `None` until the first one.
+        placement: Option<ChildPlacement>,
     }
 
     #[derive(Debug, Default)]
@@ -1223,6 +1236,7 @@ mod windows_host {
                     state.widgets.push(HostedWidget {
                         hwnd: 0,
                         taskbar: prepared_widget.taskbar,
+                        placement: None,
                     });
                     state.widgets.len() - 1
                 });
@@ -1235,8 +1249,12 @@ mod windows_host {
                     unsafe { DestroyWindow(widget.hwnd) };
                 }
                 widget.hwnd = unsafe { create_widget(prepared_widget.taskbar)? };
+                widget.placement = None;
                 tracing::info!("Created native Ceiling taskbar widget");
             }
+
+            let resized = placement_needs_repaint(widget.placement, prepared_widget.placement);
+            widget.placement = Some(prepared_widget.placement);
 
             unsafe {
                 SetWindowRgn(widget.hwnd, 0, 1);
@@ -1250,7 +1268,7 @@ mod windows_host {
                     SWP_NOACTIVATE | SWP_NOOWNERZORDER,
                 );
                 ShowWindow(widget.hwnd, SW_SHOWNA);
-                if model_changed {
+                if model_changed || resized {
                     InvalidateRect(widget.hwnd, std::ptr::null(), 0);
                 }
             }
@@ -2454,6 +2472,83 @@ mod tests {
     #[test]
     fn oversized_provider_content_stays_at_the_segment_start() {
         assert_eq!(centered_content_x(92, 72, 90), 92);
+    }
+
+    #[test]
+    fn a_strip_that_changes_size_is_repainted_in_full() {
+        let wide = ChildPlacement {
+            x: 8,
+            y: 0,
+            width: 352,
+            height: 48,
+        };
+        let narrow = ChildPlacement { width: 292, ..wide };
+        let shorter = ChildPlacement { height: 40, ..wide };
+
+        assert!(placement_needs_repaint(Some(wide), narrow));
+        assert!(placement_needs_repaint(Some(narrow), wide));
+        assert!(placement_needs_repaint(Some(wide), shorter));
+        assert!(placement_needs_repaint(None, wide));
+    }
+
+    #[test]
+    fn a_strip_that_only_moves_keeps_its_paint() {
+        let placed = ChildPlacement {
+            x: 8,
+            y: 0,
+            width: 352,
+            height: 48,
+        };
+
+        assert!(!placement_needs_repaint(Some(placed), placed));
+        assert!(!placement_needs_repaint(
+            Some(placed),
+            ChildPlacement { x: 40, ..placed }
+        ));
+    }
+
+    /// The 1.5.41 report: a 1280px taskbar with Widgets off and four tiles.
+    /// Opening windows grows the centered group and pushes Start left, so the
+    /// next placement is narrower and has to be repainted, not just clipped.
+    #[test]
+    fn start_moving_left_narrows_the_strip_and_forces_a_repaint() {
+        let taskbar = layout(
+            Rect {
+                left: 0,
+                top: 752,
+                right: 1280,
+                bottom: 800,
+            },
+            Vec::new(),
+        );
+        let placement_with_start_at = |start_left: i32| {
+            child_placement(
+                &taskbar,
+                TaskbarLandmarks {
+                    widgets: None,
+                    start: Some(Rect {
+                        left: start_left,
+                        top: 752,
+                        right: start_left + 45,
+                        bottom: 800,
+                    }),
+                    tray: None,
+                },
+                4,
+            )
+            .expect("four tiles fit left of Start")
+        };
+
+        let before = placement_with_start_at(374);
+        let after = placement_with_start_at(308);
+
+        assert_eq!((before.x, before.width), (8, 358));
+        assert_eq!((after.x, after.width), (8, 292));
+        assert!(
+            after.x + after.width <= 308 - 8,
+            "the strip must end before Start"
+        );
+        assert!(placement_needs_repaint(Some(before), after));
     }
 
     #[test]
