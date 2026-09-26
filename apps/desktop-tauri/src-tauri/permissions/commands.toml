@@ -17,6 +17,7 @@ commands.allow = [
   "begin_flyout_gesture",
   "end_flyout_gesture",
   "reveal_tray_panel_window",
+  "reveal_ready_window",
   "open_settings_window",
   "open_flyout_window",
   "close_settings_window",

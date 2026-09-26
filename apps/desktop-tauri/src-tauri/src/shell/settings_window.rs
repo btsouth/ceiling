@@ -3,6 +3,7 @@
 
 use tauri::{Emitter, Manager, PhysicalPosition, WebviewUrl};
 
+use crate::state::RevealWindow;
 use crate::surface::SurfaceMode;
 
 pub(crate) const SETTINGS_LABEL: &str = "settings";
@@ -19,8 +20,10 @@ pub fn open_or_focus(app: &tauri::AppHandle, tab: &str) -> Result<(), String> {
     crate::webview_recovery::reclaim_dead_window(app, SETTINGS_LABEL)?;
 
     if let Some(window) = app.get_webview_window(SETTINGS_LABEL) {
-        window.show().map_err(|e| e.to_string())?;
-        window.set_focus().map_err(|e| e.to_string())?;
+        if !super::window_reveal::should_defer(app, RevealWindow::Settings) {
+            window.show().map_err(|e| e.to_string())?;
+            window.set_focus().map_err(|e| e.to_string())?;
+        }
         app.emit_to(SETTINGS_LABEL, "settings-change-tab", tab)
             .map_err(|e| e.to_string())?;
         return Ok(());
@@ -36,15 +39,24 @@ pub fn open_or_focus(app: &tauri::AppHandle, tab: &str) -> Result<(), String> {
         .and_then(|geometry| geometry.height)
         .map_or(SETTINGS_HEIGHT, f64::from);
 
-    let win = tauri::WebviewWindowBuilder::new(app, SETTINGS_LABEL, url)
+    let builder = tauri::WebviewWindowBuilder::new(app, SETTINGS_LABEL, url)
         .title("Ceiling Settings")
         .inner_size(width, height)
         .decorations(false)
         .shadow(false)
         .theme(Some(tauri::Theme::Dark))
         .resizable(true)
-        .build()
-        .map_err(|e| e.to_string())?;
+        .visible(false);
+    // The page can signal readiness while build() is still returning. Keep
+    // that signal until the native caption and position have been applied.
+    super::window_reveal::arm(app, RevealWindow::Settings, false)?;
+    let win = match builder.build() {
+        Ok(win) => win,
+        Err(error) => {
+            super::window_reveal::cancel(app, RevealWindow::Settings);
+            return Err(error.to_string());
+        }
+    };
     super::webview_lifecycle::watch(app, &win);
 
     // Force DWM caption to dark; keep WS_THICKFRAME since window is resizable
@@ -53,6 +65,8 @@ pub fn open_or_focus(app: &tauri::AppHandle, tab: &str) -> Result<(), String> {
     if let Some((x, y)) = super::position::default_surface_position(app, SurfaceMode::Settings) {
         let _ = win.set_position(PhysicalPosition::new(x, y));
     }
+
+    super::window_reveal::native_ready(app, &win)?;
 
     Ok(())
 }
@@ -98,6 +112,7 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) -
 /// is rendered in the main shell surface, hide that surface back to tray.
 pub fn dismiss(app: &tauri::AppHandle, window: &tauri::WebviewWindow) -> Result<(), String> {
     if window.label() == SETTINGS_LABEL {
+        super::window_reveal::cancel(app, RevealWindow::Settings);
         return window.hide().map_err(|e| e.to_string());
     }
 

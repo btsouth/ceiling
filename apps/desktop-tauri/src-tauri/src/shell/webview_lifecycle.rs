@@ -162,36 +162,71 @@ fn on_process_failed(app: &AppHandle, label: &str, kind: win32::FailedKind) {
         .as_ref()
         .and_then(|window| window.outer_position().ok())
         .map(|position| (position.x, position.y));
-    let plan = recovery_plan(label, was_visible);
-    tracing::debug!(
-        label,
-        exists = window.is_some(),
-        was_visible,
-        ?position,
-        ?plan,
-        "webview_lifecycle: dispatching recovery"
-    );
-
-    use super::window_recovery;
-    match plan {
-        RecoveryPlan::RebuildMain { replay } => {
-            window_recovery::recover_main_after_loss(app, replay, position);
-        }
-        RecoveryPlan::RebuildSettings { reopen } => {
-            window_recovery::recover_settings_after_loss(app, reopen);
-        }
-        RecoveryPlan::RebuildFlyout { reopen } => {
-            window_recovery::recover_flyout_after_loss(app, reopen);
-        }
-        RecoveryPlan::RebuildFloatBar => {
-            window_recovery::recover_floatbar_after_loss(app);
-        }
-        RecoveryPlan::Unsupported => {
-            tracing::warn!(
+    let window_exists = window.is_some();
+    let app = app.clone();
+    let label = label.to_owned();
+    // The first build is hidden until its frontend lays out. Read that pending
+    // reveal off the COM callback thread so a contended state lock cannot
+    // lose the user's open or block WebView2's UI thread.
+    let spawned = std::thread::Builder::new()
+        .name(format!("recover-{label}"))
+        .spawn(move || {
+            let reveal_pending = app
+                .try_state::<std::sync::Mutex<crate::state::AppState>>()
+                .map(|state| {
+                    let guard = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let now = std::time::Instant::now();
+                    match label.as_str() {
+                        super::window_recovery::MAIN_LABEL => guard
+                            .window_reveal_pending_for(crate::state::RevealWindow::Main, now)
+                            .is_some(),
+                        super::settings_window::SETTINGS_LABEL => guard
+                            .window_reveal_pending_for(crate::state::RevealWindow::Settings, now)
+                            .is_some(),
+                        super::flyout_window::FLYOUT_LABEL => {
+                            guard.flyout_reveal_pending_for(now).is_some()
+                        }
+                        _ => false,
+                    }
+                })
+                .unwrap_or(false);
+            let plan = recovery_plan(&label, was_visible || reveal_pending);
+            tracing::debug!(
                 label,
-                "webview_lifecycle: no rebuild recipe for this window; leaving it as is"
+                exists = window_exists,
+                was_visible,
+                reveal_pending,
+                ?position,
+                ?plan,
+                "webview_lifecycle: dispatching recovery"
             );
-        }
+
+            use super::window_recovery;
+            match plan {
+                RecoveryPlan::RebuildMain { replay } => {
+                    window_recovery::recover_main_after_loss(&app, replay, position);
+                }
+                RecoveryPlan::RebuildSettings { reopen } => {
+                    window_recovery::recover_settings_after_loss(&app, reopen);
+                }
+                RecoveryPlan::RebuildFlyout { reopen } => {
+                    window_recovery::recover_flyout_after_loss(&app, reopen);
+                }
+                RecoveryPlan::RebuildFloatBar => {
+                    window_recovery::recover_floatbar_after_loss(&app);
+                }
+                RecoveryPlan::Unsupported => {
+                    tracing::warn!(
+                        label,
+                        "webview_lifecycle: no rebuild recipe for this window; leaving it as is"
+                    );
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::error!(%error, "webview_lifecycle: could not start recovery worker");
     }
 }
 

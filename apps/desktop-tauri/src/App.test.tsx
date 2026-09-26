@@ -24,6 +24,7 @@ const tauriMocks = vi.hoisted(() => ({
   getLocaleStrings: vi.fn(),
   setUiLanguage: vi.fn(),
   getCurrentSurfaceState: vi.fn(),
+  revealReadyWindow: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock("./lib/tauri", () => tauriMocks);

@@ -383,6 +383,7 @@ fn replay_on_main_thread(app: &AppHandle, request: MainRequest) {
 /// the dead window was showing, and a transition back to that mode would
 /// otherwise resolve as a no-op and leave the rebuilt window hidden forever.
 fn rebuild_main(app: &AppHandle) -> Result<(), String> {
+    super::window_reveal::cancel(app, crate::state::RevealWindow::Main);
     if let Some(window) = app.get_webview_window(MAIN_LABEL) {
         webview_recovery::destroy_and_release(app, &window)?;
     }
@@ -430,6 +431,7 @@ pub(crate) fn recover_settings_after_loss(app: &AppHandle, reopen: bool) {
             Some(window) => webview_recovery::destroy_and_release(&app, &window),
             None => Ok(()),
         };
+        super::window_reveal::cancel(&app, crate::state::RevealWindow::Settings);
         drop(ticket);
 
         let tab = match (destroyed, tab) {

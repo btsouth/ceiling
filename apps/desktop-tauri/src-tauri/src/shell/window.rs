@@ -274,7 +274,11 @@ where
         .ok_or_else(|| "app state unavailable".to_string())?;
     let plan = {
         let mut guard = st.lock().unwrap();
-        prepare_hide_to_tray_if_current(&mut guard, is_eligible)
+        let plan = prepare_hide_to_tray_if_current(&mut guard, is_eligible);
+        if plan.is_some() {
+            guard.take_window_reveal(crate::state::RevealWindow::Main);
+        }
+        plan
     };
 
     let Some(plan) = plan else {

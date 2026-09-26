@@ -561,6 +561,11 @@ export function revealTrayPanelWindow(): Promise<void> {
   return invoke<void>("reveal_tray_panel_window");
 }
 
+/** Release the main or Settings window after its frontend has painted. */
+export function revealReadyWindow(): Promise<void> {
+  return invoke<void>("reveal_ready_window");
+}
+
 /** Persist the user's manually-chosen flyout (Pop Out Dashboard) size. */
 export function setFlyoutSize(width: number, height: number): Promise<void> {
   return invoke<void>("set_flyout_size", { width, height });

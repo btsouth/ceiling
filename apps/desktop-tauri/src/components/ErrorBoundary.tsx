@@ -1,6 +1,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { revealTrayPanelWindow } from "../lib/tauri";
+import RevealAfterPaint from "./RevealAfterPaint";
 
 interface ErrorBoundaryProps {
   children: ReactNode;
@@ -61,25 +62,6 @@ export default class ErrorBoundary extends Component<
     // into render errors otherwise.
     console.error("[ErrorBoundary] uncaught render error", error, info.componentStack);
 
-    // The flyout is built hidden and only shown once its surface calls
-    // `reveal_tray_panel_window` after laying out. A throw during that first
-    // render means the reveal never happens and this fallback would be
-    // painted into an invisible window, so ask for the reveal ourselves.
-    // The command is a no-op when nothing is pending, and a rejection just
-    // means we are not in a Tauri window at all.
-    let label: string | null = null;
-    try {
-      label = getCurrentWebviewWindow().label;
-    } catch {
-      label = null;
-    }
-    if (label === "flyout") {
-      try {
-        void Promise.resolve(revealTrayPanelWindow()).catch(() => {});
-      } catch {
-        // Not running inside Tauri; nothing to reveal.
-      }
-    }
   }
 
   private handleRetry = (): void => {
@@ -95,7 +77,7 @@ export default class ErrorBoundary extends Component<
       return this.props.children;
     }
 
-    return (
+    const fallback = (
       <div className="error-boundary" role="alert">
         <section className="panel error">
           <h2>Something went wrong</h2>
@@ -116,5 +98,20 @@ export default class ErrorBoundary extends Component<
         </section>
       </div>
     );
+    // A first-render error replaces the layout that normally releases a
+    // hidden window. Paint the opaque fallback before revealing it.
+    let label: string | null = null;
+    try {
+      label = getCurrentWebviewWindow().label;
+    } catch {
+      // A browser test or non-Tauri render has no native window to reveal.
+    }
+    if (label === "flyout") {
+      return <RevealAfterPaint reveal={revealTrayPanelWindow}>{fallback}</RevealAfterPaint>;
+    }
+    if (label === "main" || label === "settings") {
+      return <RevealAfterPaint>{fallback}</RevealAfterPaint>;
+    }
+    return fallback;
   }
 }
