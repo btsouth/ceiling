@@ -78,7 +78,7 @@ which = "8"
 portable-pty = "0.9"
 
 # Dirs - standard directories
-dirs = "6"
+dirs = "7"
 
 # Open URLs in browser
 open = "5"
