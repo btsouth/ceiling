@@ -31,8 +31,8 @@
   `cargo run -p codexbar -- cost`. The CLI no longer launches a GUI when run with no subcommand.
 - Run the desktop shell through Tauri's build/dev flow: `.\dev.ps1`, `./dev.sh`, or
   `cd apps/desktop-tauri && npm run tauri:dev`.
-- Format/lint before handoff when code changed: `cargo fmt --all` and `cargo clippy --all-targets -- -D warnings`
-  on both manifests (or explain why not run).
+- For Rust changes, format/lint the affected crate before handoff: `cargo fmt --all` and `cargo clippy --all-targets -- -D warnings`
+  with the affected manifest. Frontend-only or documentation changes do not require Rust checks.
 - There is no active root-level `Scripts/` build pipeline in this port. Do not rely on legacy `Scripts/*.sh` commands.
 
 ## Coding Style & Naming
@@ -47,9 +47,8 @@
 ## Testing Guidelines
 - Add or extend focused Rust tests near the changed module (`#[cfg(test)]` unit tests are common in this repo).
 - For parser/fetcher changes, add deterministic samples/fixtures where practical.
-- Run `cargo test` after code changes; include any skipped checks in handoff.
-- If desktop/tray behavior changed, do a manual validation with the Tauri shell when possible (`cargo run` or
-  `codexbar-desktop-tauri`).
+- Run focused Rust tests for backend changes and the relevant frontend checks for frontend changes. Run broader required checks once before delivery; explain any unverified paths.
+- For desktop/tray changes, validate through the Tauri build/dev flow in an isolated desktop or the known Windows test route. Follow the desktop isolation skill; report native behavior that remains unverified.
 
 ## Commit & PR Guidelines
 - Use short imperative commit messages (for example: `Fix Claude CLI parser`, `Improve cookie import errors`).
@@ -91,6 +90,6 @@
 - Prefer Windows-native validation for tray/DPAPI/browser-cookie behavior; WSL/Linux can be insufficient for those paths.
 
 ## Worktrees
-- Create task worktrees under `../.worktrees/<task-name>`, never beside the repo in the projects root. Sibling worktrees (`ceiling-<task>`) bury the real projects in a long directory listing.
-- Remove with `git worktree remove ../.worktrees/<task>` then `git worktree prune`. On Windows this deletes the files but leaves the empty directory tree, so follow with `rm -rf ../.worktrees/<task>`. Skipping that is what accumulates empty skeleton directories.
-- This repo squash-merges every PR, so a branch's commits never become ancestors of `main`. Do not use `git merge-base --is-ancestor` or `git log main..branch` to decide whether work has landed; both report merged work as unmerged. Check the merged PR instead: `gh pr list --state merged --limit 40 --json number,headRefName,title`.
+- Use the assigned devbox task worktree for heavy work; otherwise follow the active machine policy. Reuse it through fixes.
+- Remove only this task's clean, landed worktree with `git worktree remove`. If Windows leaves an empty directory, confirm it is empty before removing it; do not blindly force-delete it.
+- Squash merges do not preserve branch ancestry. Check the branch's merged PR with the account wrapper and `pr list --state merged --head <branch> --json number,headRefName,title`.
