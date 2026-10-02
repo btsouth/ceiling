@@ -7726,6 +7726,7 @@ body:has(.dashboard-shell) #root {
   width: 100%;
   gap: 0;
   flex: 0 0 auto;
+  max-height: none;
   overflow: hidden;
   border: 1px solid var(--ceiling-glass-border, rgba(255, 255, 255, 0.08));
   border-radius: 14px;
