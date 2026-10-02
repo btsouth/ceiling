@@ -92,4 +92,4 @@
 ## Worktrees
 - Use the assigned devbox task worktree for heavy work; otherwise follow the active machine policy. Reuse it through fixes.
 - Remove only this task's clean, landed worktree with `git worktree remove`. If Windows leaves an empty directory, confirm it is empty before removing it; do not blindly force-delete it.
-- Squash merges do not preserve branch ancestry. Check the branch's merged PR with the account wrapper and `pr list --state merged --head <branch> --json number,headRefName,title`.
+- Squash merges do not preserve branch ancestry. Check the branch's merged PR with the account wrapper and `pr list --state merged --head <branch> --json number,headRefName,headRefOid,title`. Compare `headRefOid` with `git rev-parse HEAD` before removing a worktree; a reused branch name can match an older merged PR.
