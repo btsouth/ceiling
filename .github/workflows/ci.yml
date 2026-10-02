@@ -16,6 +16,7 @@ concurrency:
 
 jobs:
   frontend:
+    timeout-minutes: 20
     name: Frontend
     runs-on: ubuntu-latest
     steps:
