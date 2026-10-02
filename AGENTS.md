@@ -40,7 +40,9 @@
 - Keep provider-specific logic inside the provider module instead of adding cross-provider branching.
 - Preserve clear error handling and user-facing diagnostics (`anyhow`/`thiserror` + friendly messages where applicable).
 - Use `tracing` for diagnostics; do not log raw secrets, cookies, or tokens.
-- Avoid adding dependencies/tooling without confirmation.
+- Reuse existing dependencies and tooling. Add them only when needed for the
+  authorized change and explain why; routine implementation choices do not
+  require separate confirmation.
 
 ## Testing Guidelines
 - Add or extend focused Rust tests near the changed module (`#[cfg(test)]` unit tests are common in this repo).
