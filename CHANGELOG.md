@@ -2,6 +2,16 @@
 
 ## [Ceiling] Unreleased
 
+## [Ceiling] 1.5.43 - 2026-10-02
+
+Overview now scrolls through every provider when the window is short.
+
+### Fixed
+- **Overview keeps the last provider reachable.** The provider list can grow beyond the visible area and the main window scrolls through all rows. Fixes #489. Thanks to @jayn2u.
+
+### Internal
+- Updated dependencies and fixed Windows clippy compatibility with Rust 1.99.
+
 ## [Ceiling] 1.5.42 - 2026-09-26
 
 The main window and Settings now wait for their first painted frame before opening or reappearing after a WebView2 failure. The taskbar capacity strip also adjusts when its available width changes.
