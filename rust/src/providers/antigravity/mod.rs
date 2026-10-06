@@ -18,6 +18,8 @@ use crate::core::{
 };
 
 const NOT_RUNNING_MESSAGE: &str = "Antigravity language server not running. Start Google Antigravity or run `agy`, sign in, then retry.";
+const NOT_SIGNED_IN_MESSAGE: &str = "Antigravity is not signed in. Run agy, sign in, then retry.";
+const NO_QUOTA_MESSAGE: &str = "Antigravity returned no usable quota data.";
 pub(crate) const CLI_TOKEN_REQUIRED_MESSAGE: &str = "This version of the Antigravity CLI requires a local access token that Ceiling cannot read. Start agy with `agy --csrf_token <any random value>` (PowerShell: agy --csrf_token (New-Guid)), then retry.";
 
 /// Antigravity provider
@@ -478,6 +480,7 @@ impl AntigravityProvider {
         // Dropping them here is what left "no user status" with no way to tell
         // a signed-out server from a changed response shape (#412).
         let mut status_reason: Option<String> = None;
+        let mut not_signed_in;
         let user_status = match Self::post_connect_json::<UserStatusResponse>(
             client,
             base_url,
@@ -499,10 +502,19 @@ impl AntigravityProvider {
                 if response.user_status.is_none() {
                     status_reason = Some("empty response".to_string());
                 }
+                not_signed_in = response.user_status.as_ref().is_some_and(|status| {
+                    status
+                        .cascade_model_config_data
+                        .as_ref()
+                        .is_some_and(|data| {
+                            data.error_message.as_deref().is_some_and(is_not_logged_in)
+                        })
+                });
                 response.user_status
             }
             Err(error) => {
                 tracing::debug!(reason = %short_reason(&error), "Antigravity GetUserStatus failed");
+                not_signed_in = matches!(error, ProviderError::OAuth(_));
                 status_reason = Some(short_reason(&error));
                 None
             }
@@ -545,25 +557,34 @@ impl AntigravityProvider {
             },
             Err(error) => {
                 tracing::debug!(reason = %short_reason(&error), "Antigravity RetrieveUserQuotaSummary failed");
+                not_signed_in |= matches!(error, ProviderError::OAuth(_));
                 Some(short_reason(&error))
             }
         };
 
-        // Fallback: older path using per-model remainingFraction on GetUserStatus.
-        let Some(status) = user_status else {
-            return Err(ProviderError::Other(format!(
-                "Antigravity returned no user status and no quota summary ({}; {}; endpoint: {base_url})",
-                describe_unusable(status_reason.as_deref(), summary_reason.as_deref()),
-                process_info.connection_description()
-            )));
-        };
-        let mut snapshot = self.parse_user_status(UserStatusResponse {
-            user_status: Some(status),
-        })?;
-        if let Some(email) = email {
-            snapshot = snapshot.with_email(email);
+        // Both CLI and IDE use this fallback. Only actual remaining fractions
+        // can produce windows; a status/config object alone is not quota data.
+        if let Some(status) = user_status {
+            match self.parse_user_status(UserStatusResponse {
+                user_status: Some(status),
+            }) {
+                Ok(mut snapshot) => {
+                    if let Some(email) = email {
+                        snapshot = snapshot.with_email(email);
+                    }
+                    return Ok(snapshot);
+                }
+                Err(_) => status_reason.get_or_insert_with(|| "no usable quota".into()),
+            };
         }
-        Ok(snapshot)
+        if not_signed_in {
+            return Err(ProviderError::OAuth(NOT_SIGNED_IN_MESSAGE.into()));
+        }
+        Err(ProviderError::Other(format!(
+            "{NO_QUOTA_MESSAGE} ({}; {}; endpoint: {base_url})",
+            describe_unusable(status_reason.as_deref(), summary_reason.as_deref()),
+            process_info.connection_description()
+        )))
     }
 
     /// POST a Connect/JSON method on the local language server.
@@ -595,11 +616,18 @@ impl AntigravityProvider {
                 }
             }
             let status = resp.status();
-            // Only preserve an exact, known CSRF diagnosis. Never echo the body.
+            // Match known Connect fields only. Never echo or log response bodies.
+            let value = resp.json::<serde_json::Value>().await.ok();
+            if status == reqwest::StatusCode::INTERNAL_SERVER_ERROR
+                && value.as_ref().is_some_and(|value| {
+                    value["code"] == "internal"
+                        && value["message"].as_str().is_some_and(is_not_logged_in)
+                })
+            {
+                return Err(ProviderError::OAuth(NOT_SIGNED_IN_MESSAGE.into()));
+            }
             let detail = if status == reqwest::StatusCode::UNAUTHORIZED {
-                resp.json::<serde_json::Value>()
-                    .await
-                    .ok()
+                value
                     .filter(|value| value["code"] == "unauthenticated")
                     .and_then(|value| match value["message"].as_str() {
                         Some("missing CSRF token") => Some("missing CSRF token"),
@@ -635,7 +663,12 @@ impl AntigravityProvider {
 
         let mut quota_configs = model_configs
             .iter()
-            .filter(|config| config.quota_info.is_some())
+            .filter(|config| {
+                config
+                    .quota_info
+                    .as_ref()
+                    .is_some_and(|quota| quota.remaining_fraction.is_some_and(f64::is_finite))
+            })
             .filter(|config| !model_label(config).is_empty())
             .collect::<Vec<_>>();
         quota_configs.sort_by(|a, b| compare_model_configs(a, b));
@@ -670,7 +703,7 @@ impl AntigravityProvider {
             .and_then(|config| config.quota_info.as_ref())
             .map(rate_window_from_quota);
 
-        let primary = primary.unwrap_or_else(|| RateWindow::new(0.0));
+        let primary = primary.ok_or_else(|| ProviderError::Other(NO_QUOTA_MESSAGE.into()))?;
         let mut snapshot = UsageSnapshot::new(primary);
 
         if let Some(sec) = secondary {
@@ -883,6 +916,7 @@ struct PlanInfo {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelConfigData {
+    error_message: Option<String>,
     client_model_configs: Option<Vec<ModelConfig>>,
 }
 
@@ -1059,10 +1093,11 @@ fn model_window_id(config: &ModelConfig) -> String {
 /// The part of an API failure that is safe to show: the HTTP status when there
 /// is one, otherwise the shape of the failure.
 ///
-/// The message `post_connect_json` builds also carries the response body, and
-/// this string ends up in the error the panel displays, so only the status code
-/// is carried across.
+/// Unknown server messages are discarded before this point.
 fn short_reason(error: &ProviderError) -> String {
+    if matches!(error, ProviderError::OAuth(_)) {
+        return "not signed in".into();
+    }
     let text = error.to_string();
     if let Some(rest) = text.strip_prefix("API error ") {
         let csrf_detail = if rest.starts_with("401 ") {
@@ -1101,15 +1136,20 @@ fn describe_unusable(status_reason: Option<&str>, summary_reason: Option<&str>) 
     }
 }
 
-fn rate_window_from_quota(quota: &QuotaInfo) -> RateWindow {
-    rate_window_from_remaining(quota.remaining_fraction, quota.reset_time.clone())
+fn is_not_logged_in(message: &str) -> bool {
+    // agy 1.2.17 embeds this stable diagnosis in both the Connect internal
+    // error message and cascadeModelConfigData.errorMessage.
+    message.to_ascii_lowercase().contains("not logged in")
 }
 
-fn rate_window_from_remaining(
-    remaining_fraction: Option<f64>,
-    reset_time: Option<String>,
-) -> RateWindow {
-    let remaining = remaining_fraction.unwrap_or(1.0);
+fn rate_window_from_quota(quota: &QuotaInfo) -> RateWindow {
+    rate_window_from_remaining(
+        quota.remaining_fraction.expect("filtered usable quota"),
+        quota.reset_time.clone(),
+    )
+}
+
+fn rate_window_from_remaining(remaining: f64, reset_time: Option<String>) -> RateWindow {
     let used_percent = ((1.0 - remaining) * 100.0).clamp(0.0, 100.0);
     // The language server reports this as an RFC 3339 timestamp, and it has to
     // land in `resets_at`: that is the field every surface formats, as a
@@ -1188,6 +1228,10 @@ fn parse_quota_summary(response: &QuotaSummaryResponse) -> Option<UsageSnapshot>
             .to_string();
         let group_kind = classify_quota_group(&group_title);
         for bucket in group.buckets.as_deref().unwrap_or(&[]) {
+            let Some(remaining) = bucket.remaining_fraction.filter(|value| value.is_finite())
+            else {
+                continue;
+            };
             let bucket_title = bucket
                 .display_name
                 .as_deref()
@@ -1220,10 +1264,7 @@ fn parse_quota_summary(response: &QuotaSummaryResponse) -> Option<UsageSnapshot>
                 bucket_title,
                 group_kind,
                 window_kind,
-                rate: rate_window_from_remaining(
-                    bucket.remaining_fraction,
-                    bucket.reset_time.clone(),
-                ),
+                rate: rate_window_from_remaining(remaining, bucket.reset_time.clone()),
                 window_id,
             });
         }
@@ -1247,8 +1288,7 @@ fn parse_quota_summary(response: &QuotaSummaryResponse) -> Option<UsageSnapshot>
 
     let primary = pick(QuotaGroupKind::ClaudeGpt)
         .or_else(|| buckets.first())
-        .map(|b| b.rate.clone())
-        .unwrap_or_else(|| RateWindow::new(0.0));
+        .map(|b| b.rate.clone())?;
     let mut snapshot = UsageSnapshot::new(primary);
 
     if let Some(gemini) = pick(QuotaGroupKind::Gemini) {
@@ -1744,6 +1784,138 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn signed_out_responses_never_become_zero_usage() {
+        // Native agy returns Connect code=internal with "not logged in" in
+        // the message and only cascadeModelConfigData.errorMessage in status.
+        // Check each auth signal independently as well as the captured pair.
+        for (status_body, quota_body) in [
+            (
+                r#"{"userStatus":{"cascadeModelConfigData":{"errorMessage":"Not logged in: missing user token"}}}"#,
+                r#"{"code":"internal","message":"quota failed: not logged in (private detail)"}"#,
+            ),
+            (
+                r#"{"userStatus":{"cascadeModelConfigData":{}}}"#,
+                r#"{"code":"internal","message":"quota failed: not logged in (private detail)"}"#,
+            ),
+            (
+                r#"{"userStatus":{"cascadeModelConfigData":{"errorMessage":"Not logged in: missing user token"}}}"#,
+                r#"{"code":"internal","message":"unavailable private detail"}"#,
+            ),
+        ] {
+            let mut server = mockito::Server::new_async().await;
+            let status = mock_quota_endpoint(
+                &mut server,
+                "GetUserStatus",
+                200,
+                status_body,
+                mockito::Matcher::Exact("test-token".into()),
+            );
+            let summary = mock_quota_endpoint(
+                &mut server,
+                "RetrieveUserQuotaSummary",
+                500,
+                quota_body,
+                mockito::Matcher::Exact("test-token".into()),
+            );
+            let process = AntigravityProvider::parse_process_info(
+                "42\tagy.exe\tagy.exe --csrf_token test-token",
+            )
+            .unwrap();
+            let error = AntigravityProvider::new()
+                .fetch_from_api(&reqwest::Client::new(), &process, &server.url())
+                .await
+                .expect_err("signed-out status must not be a snapshot");
+            assert!(
+                matches!(&error, ProviderError::OAuth(message) if message == NOT_SIGNED_IN_MESSAGE)
+            );
+            assert!(!error.to_string().contains("private detail"));
+            status.assert();
+            summary.assert();
+        }
+    }
+
+    #[tokio::test]
+    async fn missing_quota_without_auth_signal_is_a_data_error() {
+        let mut server = mockito::Server::new_async().await;
+        let status = mock_quota_endpoint(
+            &mut server,
+            "GetUserStatus",
+            200,
+            r#"{"userStatus":{"cascadeModelConfigData":{"clientModelConfigs":[{"label":"Claude","quotaInfo":{}}]}}}"#,
+            mockito::Matcher::Missing,
+        );
+        let summary = mock_quota_endpoint(
+            &mut server,
+            "RetrieveUserQuotaSummary",
+            500,
+            r#"{"code":"internal","message":"unavailable private detail"}"#,
+            mockito::Matcher::Missing,
+        );
+        let process = AntigravityProvider::parse_process_info("42\tagy.exe\tagy.exe").unwrap();
+        let error = AntigravityProvider::new()
+            .fetch_from_api(&reqwest::Client::new(), &process, &server.url())
+            .await
+            .err()
+            .unwrap();
+        assert!(
+            matches!(&error, ProviderError::Other(message) if message.contains(NO_QUOTA_MESSAGE))
+        );
+        assert!(!error.to_string().contains("private detail"));
+        status.assert();
+        summary.assert();
+    }
+
+    #[tokio::test]
+    async fn ide_fallback_reports_only_models_with_real_quota() {
+        let mut server = mockito::Server::new_async().await;
+        let status = mock_quota_endpoint(
+            &mut server,
+            "GetUserStatus",
+            200,
+            r#"{"userStatus":{"planStatus":{"planInfo":{"planDisplayName":"Pro"}},"cascadeModelConfigData":{"clientModelConfigs":[{"label":"Claude Sonnet","quotaInfo":{"remainingFraction":0.8}},{"label":"Gemini Pro","quotaInfo":{"resetTime":"2026-10-05T22:00:00Z"}},{"label":"Gemini Flash","quotaInfo":{}},{"label":"Other"}]}}}"#,
+            mockito::Matcher::Exact("ide-token".into()),
+        );
+        let summary = mock_quota_endpoint(
+            &mut server,
+            "RetrieveUserQuotaSummary",
+            200,
+            r#"{"response":{"groups":[{"displayName":"Gemini","buckets":[{"window":"weekly"}]}]}}"#,
+            mockito::Matcher::Exact("ide-token".into()),
+        );
+        let process = AntigravityProvider::parse_process_info(
+            "43\tlanguage_server.exe\tlanguage_server.exe --csrf_token ide-token --https_server_port 0").unwrap();
+        let snapshot = AntigravityProvider::new()
+            .fetch_from_api(&reqwest::Client::new(), &process, &server.url())
+            .await
+            .unwrap();
+        assert!((snapshot.primary.used_percent - 20.0).abs() < 0.01);
+        assert!(snapshot.secondary.is_none());
+        assert!(snapshot.model_specific.is_none());
+        assert_eq!(snapshot.extra_rate_windows.len(), 1);
+        assert_eq!(snapshot.extra_rate_windows[0].title, "Claude Sonnet");
+        assert_eq!(snapshot.login_method.as_deref(), Some("Pro"));
+        status.assert();
+        summary.assert();
+    }
+
+    #[test]
+    fn quota_summary_omits_missing_fractions_in_every_window() {
+        let summary = make_quota_summary(serde_json::json!([
+            {"displayName":"Claude and GPT", "buckets":[
+                {"window":"five_hour", "resetTime":"2026-10-05T22:00:00Z"},
+                {"window":"weekly", "remainingFraction":0.4}]},
+            {"displayName":"Gemini", "buckets":[{"window":"weekly"}]}
+        ]));
+        let snapshot = parse_quota_summary(&summary).unwrap();
+        assert!((snapshot.primary.used_percent - 60.0).abs() < 0.01);
+        assert!(snapshot.secondary.is_none());
+        assert_eq!(snapshot.extra_rate_windows.len(), 1);
+        let empty = make_quota_summary(serde_json::json!([
+            {"displayName":"Claude", "buckets":[{"remainingFraction":null}]}]));
+        assert!(parse_quota_summary(&empty).is_none());
+    }
+
     fn make_response(models: Vec<(&str, f64)>) -> UserStatusResponse {
         let json = serde_json::json!({
             "userStatus": {
@@ -1953,8 +2125,7 @@ mod tests {
         // #412: the language server sends RFC 3339, and every surface formats
         // `resets_at`. Passing it as the description made the panel print the
         // raw ISO string instead.
-        let window =
-            rate_window_from_remaining(Some(0.5), Some("2026-09-16T22:33:14Z".to_string()));
+        let window = rate_window_from_remaining(0.5, Some("2026-09-16T22:33:14Z".to_string()));
         assert_eq!(
             window.resets_at,
             Some("2026-09-16T22:33:14Z".parse::<DateTime<Utc>>().unwrap())
@@ -1964,7 +2135,7 @@ mod tests {
 
     #[test]
     fn a_reset_time_in_an_unexpected_shape_is_still_shown() {
-        let window = rate_window_from_remaining(Some(0.5), Some("in a while".to_string()));
+        let window = rate_window_from_remaining(0.5, Some("in a while".to_string()));
         assert_eq!(window.resets_at, None);
         assert_eq!(window.reset_description.as_deref(), Some("in a while"));
     }
