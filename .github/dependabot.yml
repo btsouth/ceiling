@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      cargo:
+        patterns:
+          - "*"
 
   # Frontend dependencies use pnpm, which Dependabot's npm updater cannot
   # read here: every update run fails against pnpm-lock.yaml. Bump those
@@ -12,3 +16,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
