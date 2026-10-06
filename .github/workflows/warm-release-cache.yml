@@ -97,7 +97,12 @@ jobs:
             release-${{ steps.cachekey.outputs.cache_version }}-${{ runner.os }}-msvc-${{ steps.cachekey.outputs.rust_hash }}-
             release-${{ steps.cachekey.outputs.cache_version }}-${{ runner.os }}-msvc-
 
+      # An exact hit means this key was already built and saved, so rebuilding
+      # proves nothing. The restore above still runs so the hit refreshes the
+      # entry and keeps it from 7-day idle eviction. A lock or toolchain change
+      # changes the key, misses, and builds and saves as before.
       - name: Build unsigned application binaries
+        if: steps.cache-restore.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           & .\scripts\windows-release-build.ps1 `
