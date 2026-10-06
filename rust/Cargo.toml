@@ -25,7 +25,7 @@ reqwest = { version = "0.12", features = ["json", "cookies", "rustls-tls", "stre
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.9"
+toml = "1.1"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -53,11 +53,11 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Encryption for cookie decryption
-aes-gcm = "0.10"
-base64 = "0.22"
+aes-gcm = "0.11"
+base64 = "0.23"
 
 # Hashing for update verification
-sha2 = "0.10"
+sha2 = "0.11"
 
 # Secure credential storage
 keyring = { version = "3", features = ["windows-native"] }
@@ -82,9 +82,9 @@ dirs = "7"
 
 # Open URLs in browser
 open = "5"
-fluent-templates = "0.13"
+fluent-templates = "0.15"
 unic-langid = "0.9"
-rmcp = { version = "2.2.0", features = ["server", "transport-io"] }
+rmcp = { version = "3.5.0", features = ["server", "transport-io"] }
 
 # Unix-only: O_NOFOLLOW and the owner check on the launch-log directory
 [target.'cfg(unix)'.dependencies]
