@@ -2492,6 +2492,27 @@ mod tests {
     }
 
     #[test]
+    fn repeated_placement_after_a_resize_does_not_request_another_repaint() {
+        let initial = ChildPlacement {
+            x: 8,
+            y: 0,
+            width: 352,
+            height: 48,
+        };
+        let resized = ChildPlacement {
+            width: 292,
+            ..initial
+        };
+
+        assert!(placement_needs_repaint(Some(initial), resized));
+        assert!(!placement_needs_repaint(Some(resized), resized));
+        assert!(!placement_needs_repaint(
+            Some(resized),
+            ChildPlacement { y: 4, ..resized }
+        ));
+    }
+
+    #[test]
     fn a_strip_that_only_moves_keeps_its_paint() {
         let placed = ChildPlacement {
             x: 8,

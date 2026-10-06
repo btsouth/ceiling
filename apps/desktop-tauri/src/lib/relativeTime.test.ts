@@ -30,6 +30,24 @@ const t = (key: LocaleKey): string => {
 describe("formatRelativeUpdated", () => {
   const NOW = Date.parse("2024-06-01T12:00:00Z");
 
+  it.each([
+    [0, "just now"],
+    [59_999, "just now"],
+    [60_000, "1 minute ago"],
+    [119_999, "1 minute ago"],
+    [120_000, "2 minutes ago"],
+    [3_599_999, "59 minutes ago"],
+    [3_600_000, "1 hour ago"],
+    [7_199_999, "1 hour ago"],
+    [7_200_000, "2 hours ago"],
+    [86_399_999, "23 hours ago"],
+    [86_400_000, "1 day ago"],
+    [172_799_999, "1 day ago"],
+    [172_800_000, "2 days ago"],
+  ])("formats a %i ms age as %s", (ageMs, expected) => {
+    expect(formatRelativeUpdated(NOW - ageMs, t, NOW)).toBe(expected);
+  });
+
   it("returns 'Never' when timestamp is null or undefined", () => {
     expect(formatRelativeUpdated(null, t, NOW)).toBe("Never");
     expect(formatRelativeUpdated(undefined, t, NOW)).toBe("Never");
