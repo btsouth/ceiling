@@ -667,7 +667,8 @@ impl AntigravityProvider {
                 config
                     .quota_info
                     .as_ref()
-                    .is_some_and(|quota| quota.remaining_fraction.is_some_and(f64::is_finite))
+                    .and_then(rate_window_from_quota)
+                    .is_some()
             })
             .filter(|config| !model_label(config).is_empty())
             .collect::<Vec<_>>();
@@ -681,27 +682,27 @@ impl AntigravityProvider {
 
         let primary = best_summary_model(&summary_candidates, ModelFamily::Claude)
             .and_then(|config| config.quota_info.as_ref())
-            .map(rate_window_from_quota)
+            .and_then(rate_window_from_quota)
             .or_else(|| {
                 summary_candidates
                     .first()
                     .and_then(|config| config.quota_info.as_ref())
-                    .map(rate_window_from_quota)
+                    .and_then(rate_window_from_quota)
             })
             .or_else(|| {
                 quota_configs
                     .first()
                     .and_then(|config| config.quota_info.as_ref())
-                    .map(rate_window_from_quota)
+                    .and_then(rate_window_from_quota)
             });
 
         let secondary = best_summary_model(&summary_candidates, ModelFamily::GeminiPro)
             .and_then(|config| config.quota_info.as_ref())
-            .map(rate_window_from_quota);
+            .and_then(rate_window_from_quota);
 
         let tertiary = best_summary_model(&summary_candidates, ModelFamily::GeminiFlash)
             .and_then(|config| config.quota_info.as_ref())
-            .map(rate_window_from_quota);
+            .and_then(rate_window_from_quota);
 
         let primary = primary.ok_or_else(|| ProviderError::Other(NO_QUOTA_MESSAGE.into()))?;
         let mut snapshot = UsageSnapshot::new(primary);
@@ -714,18 +715,14 @@ impl AntigravityProvider {
         }
 
         for config in quota_configs {
-            let Some(quota) = &config.quota_info else {
+            let Some(rate) = config.quota_info.as_ref().and_then(rate_window_from_quota) else {
                 continue;
             };
             let title = clean_model_label(model_label(config));
             if title.is_empty() {
                 continue;
             }
-            snapshot = snapshot.with_extra_rate_window(
-                model_window_id(config),
-                title,
-                rate_window_from_quota(quota),
-            );
+            snapshot = snapshot.with_extra_rate_window(model_window_id(config), title, rate);
         }
 
         // Add plan info
@@ -1142,11 +1139,25 @@ fn is_not_logged_in(message: &str) -> bool {
     message.to_ascii_lowercase().contains("not logged in")
 }
 
-fn rate_window_from_quota(quota: &QuotaInfo) -> RateWindow {
-    rate_window_from_remaining(
-        quota.remaining_fraction.expect("filtered usable quota"),
+fn rate_window_from_quota(quota: &QuotaInfo) -> Option<RateWindow> {
+    let remaining = match quota.remaining_fraction {
+        Some(value) if value.is_finite() => value,
+        Some(_) => return None,
+        None => {
+            // QuotaInfo uses an ordinary proto3 scalar: JSON omits zero.
+            // Require a real reset to distinguish exhaustion from an empty
+            // quota object or an uninitialized epoch reset.
+            let reset = DateTime::parse_from_rfc3339(quota.reset_time.as_deref()?).ok()?;
+            if reset.timestamp() <= 0 {
+                return None;
+            }
+            0.0
+        }
+    };
+    Some(rate_window_from_remaining(
+        remaining,
         quota.reset_time.clone(),
-    )
+    ))
 }
 
 fn rate_window_from_remaining(remaining: f64, reset_time: Option<String>) -> RateWindow {
@@ -1228,6 +1239,9 @@ fn parse_quota_summary(response: &QuotaSummaryResponse) -> Option<UsageSnapshot>
             .to_string();
         let group_kind = classify_quota_group(&group_title);
         for bucket in group.buckets.as_deref().unwrap_or(&[]) {
+            // Unlike model QuotaInfo, the summary fraction belongs to a
+            // presence-tracked `remaining` oneof. An explicit zero survives
+            // protojson; an absent fraction is not evidence of exhaustion.
             let Some(remaining) = bucket.remaining_fraction.filter(|value| value.is_finite())
             else {
                 continue;
@@ -1890,17 +1904,24 @@ mod tests {
             .await
             .unwrap();
         assert!((snapshot.primary.used_percent - 20.0).abs() < 0.01);
-        assert!(snapshot.secondary.is_none());
+        let secondary = snapshot.secondary.unwrap();
+        assert_eq!(secondary.used_percent, 100.0);
+        assert_eq!(
+            secondary.resets_at,
+            Some("2026-10-05T22:00:00Z".parse::<DateTime<Utc>>().unwrap())
+        );
         assert!(snapshot.model_specific.is_none());
-        assert_eq!(snapshot.extra_rate_windows.len(), 1);
+        assert_eq!(snapshot.extra_rate_windows.len(), 2);
         assert_eq!(snapshot.extra_rate_windows[0].title, "Claude Sonnet");
+        assert_eq!(snapshot.extra_rate_windows[1].title, "Gemini Pro");
+        assert_eq!(snapshot.extra_rate_windows[1].window.used_percent, 100.0);
         assert_eq!(snapshot.login_method.as_deref(), Some("Pro"));
         status.assert();
         summary.assert();
     }
 
     #[test]
-    fn quota_summary_omits_missing_fractions_in_every_window() {
+    fn quota_summary_missing_oneof_fraction_is_unknown_even_with_reset() {
         let summary = make_quota_summary(serde_json::json!([
             {"displayName":"Claude and GPT", "buckets":[
                 {"window":"five_hour", "resetTime":"2026-10-05T22:00:00Z"},
@@ -1911,9 +1932,83 @@ mod tests {
         assert!((snapshot.primary.used_percent - 60.0).abs() < 0.01);
         assert!(snapshot.secondary.is_none());
         assert_eq!(snapshot.extra_rate_windows.len(), 1);
-        let empty = make_quota_summary(serde_json::json!([
-            {"displayName":"Claude", "buckets":[{"remainingFraction":null}]}]));
-        assert!(parse_quota_summary(&empty).is_none());
+        for bucket in [
+            serde_json::json!({}),
+            serde_json::json!({"remainingFraction":null}),
+            serde_json::json!({"window":"five_hour", "resetTime":"2026-10-05T22:00:00Z"}),
+        ] {
+            let unknown = make_quota_summary(serde_json::json!([
+                {"displayName":"Claude", "buckets":[bucket]}]));
+            assert!(parse_quota_summary(&unknown).is_none());
+        }
+    }
+
+    #[test]
+    fn quota_summary_explicit_zero_fraction_is_exhausted() {
+        let summary = make_quota_summary(serde_json::json!([
+            {"displayName":"Claude and GPT", "buckets":[
+                {"window":"five_hour", "remainingFraction":0.0,
+                 "resetTime":"2026-10-05T22:00:00Z"},
+                {"window":"weekly", "remainingFraction":0.4}]}
+        ]));
+        let snapshot = parse_quota_summary(&summary).unwrap();
+        assert_eq!(snapshot.primary.used_percent, 100.0);
+        assert_eq!(
+            snapshot.primary.resets_at,
+            Some("2026-10-05T22:00:00Z".parse::<DateTime<Utc>>().unwrap())
+        );
+        assert!((snapshot.model_specific.unwrap().used_percent - 60.0).abs() < 0.01);
+        assert_eq!(snapshot.extra_rate_windows.len(), 2);
+        assert_eq!(snapshot.extra_rate_windows[0].window.used_percent, 100.0);
+    }
+
+    #[test]
+    fn model_missing_fraction_with_real_reset_is_exhausted() {
+        let response = serde_json::from_value(serde_json::json!({
+            "userStatus": {"cascadeModelConfigData": {"clientModelConfigs": [
+                {"label":"Claude Sonnet", "quotaInfo":{"resetTime":"2026-10-05T22:00:00Z"}}
+            ]}}
+        }))
+        .unwrap();
+        let snapshot = AntigravityProvider::new()
+            .parse_user_status(response)
+            .unwrap();
+        assert_eq!(snapshot.primary.used_percent, 100.0);
+        assert_eq!(
+            snapshot.primary.resets_at,
+            Some("2026-10-05T22:00:00Z".parse::<DateTime<Utc>>().unwrap())
+        );
+        assert_eq!(snapshot.extra_rate_windows.len(), 1);
+        assert_eq!(snapshot.extra_rate_windows[0].window.used_percent, 100.0);
+    }
+
+    #[test]
+    fn model_without_quota_or_with_uninitialized_reset_is_not_usable() {
+        for config in [
+            serde_json::json!({"label":"Claude"}),
+            serde_json::json!({"label":"Claude", "quotaInfo":{}}),
+            serde_json::json!({"label":"Claude", "quotaInfo":{"resetTime":""}}),
+            serde_json::json!({"label":"Claude", "quotaInfo":{"resetTime":"invalid"}}),
+            serde_json::json!({"label":"Claude", "quotaInfo":{"resetTime":"1970-01-01T00:00:00Z"}}),
+        ] {
+            let response = serde_json::from_value(serde_json::json!({
+                "userStatus": {"cascadeModelConfigData": {"clientModelConfigs": [config]}}
+            }))
+            .unwrap();
+            let error = AntigravityProvider::new()
+                .parse_user_status(response)
+                .unwrap_err();
+            assert!(matches!(error, ProviderError::Other(message) if message == NO_QUOTA_MESSAGE));
+        }
+        for remaining in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                rate_window_from_quota(&QuotaInfo {
+                    remaining_fraction: Some(remaining),
+                    reset_time: Some("2026-10-05T22:00:00Z".into()),
+                })
+                .is_none()
+            );
+        }
     }
 
     fn make_response(models: Vec<(&str, f64)>) -> UserStatusResponse {
