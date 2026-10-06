@@ -18,6 +18,7 @@ use crate::core::{
 };
 
 const NOT_RUNNING_MESSAGE: &str = "Antigravity language server not running. Start Google Antigravity or run `agy`, sign in, then retry.";
+pub(crate) const CLI_TOKEN_REQUIRED_MESSAGE: &str = "This version of the Antigravity CLI requires a local access token that Ceiling cannot read. Start agy with `agy --csrf_token <any random value>` (PowerShell: agy --csrf_token (New-Guid)), then retry.";
 
 /// Antigravity provider
 pub struct AntigravityProvider {
@@ -268,13 +269,15 @@ impl AntigravityProvider {
     }
 
     /// CLI credentials must stay paired with that process's own listening ports.
-    /// Preserve the historical IDE port fallback when PID enumeration is unavailable.
+    /// IDEs and tokenless CLIs retain the historical heuristic port fallback.
     fn api_port_candidates(process: &ProcessInfo) -> Vec<u16> {
         let mut ports = process
             .pid
             .map(Self::listening_ports_for_pid)
             .unwrap_or_default();
-        if !process.is_cli {
+        if !process.is_cli
+            || (process.csrf_token.is_empty() && process.extension_server_csrf_token.is_none())
+        {
             if process.extension_port > 0 {
                 ports
                     .extend((0..20u16).map(|offset| process.extension_port.saturating_add(offset)));
@@ -330,7 +333,7 @@ impl AntigravityProvider {
     }
 
     /// Non-Windows platforms have no `Get-NetTCPConnection`; return an empty list by design so
-    /// IDE discovery retains heuristic ports; CLI discovery requires owned listeners.
+    /// IDEs and tokenless CLIs retain heuristic ports; credentialed CLIs require owned listeners.
     #[cfg(not(windows))]
     fn listening_ports_for_pid(_pid: u32) -> Vec<u16> {
         Vec::new()
@@ -362,13 +365,31 @@ impl AntigravityProvider {
                 Err(error) => {
                     // Keep a reached-but-rejected server's diagnosis ahead of transport noise.
                     if failure.is_none() || error.to_string().contains("HTTP ") {
-                        failure = Some(error);
+                        failure = Some((error, process));
                     }
                 }
             }
         }
-        Err(failure
-            .unwrap_or_else(|| ProviderError::Other("Could not find Antigravity API port".into())))
+        Err(match failure {
+            Some((error, process)) => Self::user_facing_failure(&process, error),
+            None => ProviderError::Other("Could not find Antigravity API port".into()),
+        })
+    }
+
+    /// Translate only the final selected failure, after all ports/processes were tried.
+    fn user_facing_failure(process: &ProcessInfo, error: ProviderError) -> ProviderError {
+        if process.is_cli
+            && process.csrf_token.is_empty()
+            && process.extension_server_csrf_token.is_none()
+            && error.to_string().contains("HTTP 401 (missing CSRF token)")
+        {
+            // The underlying error retains safe PID, auth-source and endpoint detail.
+            // Keep that context in diagnostics rather than the fixed user guidance.
+            tracing::debug!(%error, "Antigravity CLI requires an explicit local access token");
+            ProviderError::OAuth(CLI_TOKEN_REQUIRED_MESSAGE.into())
+        } else {
+            error
+        }
     }
 
     async fn fetch_from_candidates(
@@ -1513,6 +1534,41 @@ mod tests {
         assert!(AntigravityProvider::api_port_candidates(&process).is_empty());
     }
 
+    #[test]
+    fn tokenless_cli_keeps_advertised_window_and_known_fallback_ports() {
+        let process =
+            AntigravityProvider::parse_process_info("agy.exe --extension_server_port 53830")
+                .unwrap();
+        assert_eq!(
+            AntigravityProvider::api_port_candidates(&process),
+            (53830..53850).collect::<Vec<_>>()
+        );
+        let process = AntigravityProvider::parse_process_info("42\tagy.exe\tagy.exe").unwrap();
+        let ports = AntigravityProvider::api_port_candidates(&process);
+        for port in [53835, 53836, 53837, 53838, 53845, 53849] {
+            assert!(ports.contains(&port));
+        }
+    }
+
+    #[test]
+    fn cli_with_only_extension_token_cannot_probe_guessed_ports() {
+        let process = AntigravityProvider::parse_process_info(
+            "agy.exe --extension_server_csrf_token private-token --https_server_port 53835",
+        )
+        .unwrap();
+        assert!(AntigravityProvider::api_port_candidates(&process).is_empty());
+    }
+
+    #[test]
+    fn parses_powershell_new_guid_in_windows_command_line() {
+        let output = r#""C:\Users\x\AppData\Local\agy\bin\agy.exe" --csrf_token 1b4e28ba-2fa1-11d2-883f-0016d3cca427"#;
+        let process =
+            AntigravityProvider::parse_process_info(&format!("42\tagy.exe\t{output}")).unwrap();
+        assert!(process.is_cli);
+        assert_eq!(process.csrf_token, "1b4e28ba-2fa1-11d2-883f-0016d3cca427");
+        assert_eq!(process.csrf_tokens(), (process.csrf_token.as_str(), None));
+    }
+
     fn mock_quota_endpoint(
         server: &mut mockito::ServerGuard,
         method: &str,
@@ -1648,8 +1704,46 @@ mod tests {
         assert!(error.contains("agy/Antigravity CLI; PID: 42; CSRF source: none (tokenless CLI)"));
         assert!(error.contains(&server.url()));
         assert!(!error.contains("secret-value"));
+        let actionable =
+            AntigravityProvider::user_facing_failure(&process, ProviderError::Other(error));
+        assert!(
+            matches!(&actionable, ProviderError::OAuth(message) if message == CLI_TOKEN_REQUIRED_MESSAGE)
+        );
+        // Tauri forwards this redacted Display text to its provider error UI.
+        assert_eq!(
+            crate::logging::safe_error_message(actionable),
+            format!("OAuth error: {CLI_TOKEN_REQUIRED_MESSAGE}")
+        );
         for mock in mocks {
             mock.assert();
+        }
+    }
+
+    #[test]
+    fn cli_token_guidance_does_not_replace_unrelated_or_credentialed_failures() {
+        for (command, reason) in [
+            ("agy.exe", "HTTP 401 (invalid CSRF token)"),
+            ("agy.exe", "HTTP 500"),
+            (
+                "agy.exe --csrf_token private-token",
+                "HTTP 401 (missing CSRF token)",
+            ),
+            (
+                "agy.exe --extension_server_csrf_token private-token",
+                "HTTP 401 (missing CSRF token)",
+            ),
+            (
+                "language_server.exe --csrf_token private-token",
+                "HTTP 401 (missing CSRF token)",
+            ),
+        ] {
+            let process =
+                AntigravityProvider::parse_process_info(&format!("42\t{command}")).unwrap();
+            let error = AntigravityProvider::user_facing_failure(
+                &process,
+                ProviderError::Other(reason.into()),
+            );
+            assert!(matches!(error, ProviderError::Other(message) if message == reason));
         }
     }
 
