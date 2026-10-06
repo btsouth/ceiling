@@ -45,9 +45,9 @@ impl AntigravityProvider {
     /// Detect running Antigravity language server and extract connection info.
     ///
     /// Covers both the Google Antigravity IDE (`language_server.exe`) and the
-    /// Antigravity CLI (`agy` / `antigravity-cli`). The CLI hosts the same local
-    /// Connect API without a `--csrf_token` flag.
-    fn detect_process_info() -> Result<ProcessInfo, ProviderError> {
+    /// Antigravity CLI (`agy` / `antigravity-cli`). Some CLI versions permit
+    /// tokenless local Connect API requests; others require CSRF. Only use tokens advertised by the matched process.
+    fn detect_process_infos() -> Result<Vec<ProcessInfo>, ProviderError> {
         // Use PowerShell to get process command lines
         #[cfg(windows)]
         const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -87,8 +87,11 @@ impl AntigravityProvider {
         }
 
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Self::parse_process_info(&stdout)
-            .ok_or_else(|| ProviderError::NotInstalled(NOT_RUNNING_MESSAGE.to_string()))
+        let processes = Self::parse_process_infos(&stdout);
+        if processes.is_empty() {
+            return Err(ProviderError::NotInstalled(NOT_RUNNING_MESSAGE.to_string()));
+        }
+        Ok(processes)
     }
 
     /// Whether a command line is an Antigravity CLI process (`agy` / `antigravity-cli`).
@@ -148,23 +151,33 @@ impl AntigravityProvider {
                 || lower.contains("csrf_token"))
     }
 
+    #[cfg(test)]
     fn parse_process_info(stdout: &str) -> Option<ProcessInfo> {
+        Self::parse_process_infos(stdout).into_iter().next()
+    }
+
+    fn parse_process_infos(stdout: &str) -> Vec<ProcessInfo> {
         // Parse command line for CSRF token and port — compiled once.
         // Antigravity 2.3+ may omit `--extension_server_port` entirely and instead
         // advertise `--https_server_port 0` (OS-assigned). Discovery then depends on
         // the process PID + listening-port enumeration, not a fixed advertised port.
         //
-        // The Antigravity CLI (`agy`) hosts the same Connect API without `--csrf_token`.
-        // Empty CSRF is accepted only for CLI matches; IDE still requires a token.
+        // Older CLI versions may accept tokenless requests. Keep those candidates,
+        // but do not assume that newer versions will accept them.
         static CSRF_RE: OnceLock<Regex> = OnceLock::new();
         static EXT_CSRF_RE: OnceLock<Regex> = OnceLock::new();
         static EXT_PORT_RE: OnceLock<Regex> = OnceLock::new();
         static HTTPS_PORT_RE: OnceLock<Regex> = OnceLock::new();
         // Accept both `--flag value` and `--flag=value` forms.
-        let csrf_regex = CSRF_RE
-            .get_or_init(|| Regex::new(r"--csrf_token(?:=|\s+)([a-f0-9-]+)").expect("valid regex"));
+        let csrf_regex = CSRF_RE.get_or_init(|| {
+            Regex::new(r#"(?:^|\s)--csrf_token(?:=|\s+)(?:"([^"\r\n]+)"|([^\s"]+))"#)
+                .expect("valid regex")
+        });
         let ext_csrf_regex = EXT_CSRF_RE.get_or_init(|| {
-            Regex::new(r"--extension_server_csrf_token(?:=|\s+)([a-f0-9-]+)").expect("valid regex")
+            Regex::new(
+                r#"(?:^|\s)--extension_server_csrf_token(?:=|\s+)(?:"([^"\r\n]+)"|([^\s"]+))"#,
+            )
+            .expect("valid regex")
         });
         let ext_port_regex = EXT_PORT_RE.get_or_init(|| {
             Regex::new(r"--extension_server_port(?:=|\s+)(\d+)").expect("valid regex")
@@ -172,6 +185,7 @@ impl AntigravityProvider {
         let https_port_regex = HTTPS_PORT_RE
             .get_or_init(|| Regex::new(r"--https_server_port(?:=|\s+)(\d+)").expect("valid regex"));
 
+        let mut processes = Vec::new();
         for raw_line in stdout.lines() {
             if raw_line.trim().is_empty() {
                 continue;
@@ -196,12 +210,14 @@ impl AntigravityProvider {
 
             let csrf_token = csrf_regex
                 .captures(line)
-                .and_then(|c| c.get(1))
+                .and_then(|c| c.get(1).or_else(|| c.get(2)))
+                .filter(|m| !m.as_str().starts_with("--"))
                 .map(|m| m.as_str().to_string());
 
             let ext_csrf_token = ext_csrf_regex
                 .captures(line)
-                .and_then(|c| c.get(1))
+                .and_then(|c| c.get(1).or_else(|| c.get(2)))
+                .filter(|m| !m.as_str().starts_with("--"))
                 .map(|m| m.as_str().to_string());
 
             let extension_port = ext_port_regex
@@ -216,7 +232,7 @@ impl AntigravityProvider {
 
             // Prefer the explicit extension server port when present and non-zero.
             // A zero HTTPS port means "OS assigns the real port" and is not a probe
-            // target; keep 0 so find_api_port relies on PID enumeration instead.
+            // target; keep 0 so discovery relies on PID enumeration instead.
             let port = match extension_port {
                 Some(p) if p > 0 => p,
                 _ => match https_port {
@@ -232,14 +248,15 @@ impl AntigravityProvider {
 
             // IDE language_server requires CSRF. Tokenless IDE matches are skipped so a
             // later valid IDE (or CLI) candidate can still be found.
-            // CLI accepts an empty token — its local server does not check CSRF.
+            // Keep tokenless CLI candidates so older versions still work.
             let token = match (is_cli, csrf_token) {
                 (_, Some(token)) => token,
                 (true, None) => String::new(),
                 (false, None) => continue,
             };
 
-            return Some(ProcessInfo {
+            processes.push(ProcessInfo {
+                is_cli,
                 csrf_token: token,
                 extension_server_csrf_token: ext_csrf_token,
                 extension_port: port,
@@ -247,78 +264,30 @@ impl AntigravityProvider {
             });
         }
 
-        None
+        processes
     }
 
-    /// Find the actual API port by probing the language server's candidate ports.
-    async fn find_api_port(extension_port: u16, pid: Option<u32>) -> Result<u16, ProviderError> {
-        // The language server binds a RANDOM localhost port at startup; --extension_server_port
-        // is only a reference point (and belongs to a separate HTTP extension server), so the
-        // real gRPC/Connect API port is not guaranteed to be within a small window above it.
-        // Mirror the macOS/Linux probe (which uses `lsof`) by enumerating the language-server
-        // process's own listening ports first, then fall back to a heuristic window above the
-        // extension port and a few historically-seen ports.
-        //
-        // SECURITY: TLS verification is disabled because the local language server uses a
-        // self-signed certificate. This is scoped to 127.0.0.1 only; we confirm a port by
-        // checking that it answers the expected gRPC endpoint.
-        let client = crate::core::credentialed_http_client_builder()
-            .timeout(std::time::Duration::from_secs(2))
-            .danger_accept_invalid_certs(true)
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| ProviderError::Other(e.to_string()))?;
-
-        // Ordered candidate ports: the process's real listening ports first (Windows
-        // equivalent of `lsof`), then the heuristic window above a real advertised port,
-        // then a few known ports as a last resort. Skip the heuristic when the advertised
-        // port is 0 (OS-assigned / unknown) so we do not probe 0..19.
-        let mut candidates: Vec<u16> = Vec::new();
-        if let Some(pid) = pid {
-            candidates.extend(Self::listening_ports_for_pid(pid));
-        }
-        if extension_port > 0 {
-            candidates.extend((0..20u16).map(|offset| extension_port.saturating_add(offset)));
-        }
-        candidates.extend([53835, 53836, 53837, 53838, 53845, 53849]);
-
-        let mut probed: Vec<u16> = Vec::new();
-        for port in candidates {
-            if port == 0 || probed.contains(&port) {
-                continue; // never probe port 0; probe each real port at most once
+    /// CLI credentials must stay paired with that process's own listening ports.
+    /// Preserve the historical IDE port fallback when PID enumeration is unavailable.
+    fn api_port_candidates(process: &ProcessInfo) -> Vec<u16> {
+        let mut ports = process
+            .pid
+            .map(Self::listening_ports_for_pid)
+            .unwrap_or_default();
+        if !process.is_cli {
+            if process.extension_port > 0 {
+                ports
+                    .extend((0..20u16).map(|offset| process.extension_port.saturating_add(offset)));
             }
-            probed.push(port);
-            if Self::probe_api_port(&client, port).await {
-                return Ok(port);
+            ports.extend([53835, 53836, 53837, 53838, 53845, 53849]);
+        }
+        let mut unique = Vec::new();
+        for port in ports {
+            if port > 0 && !unique.contains(&port) {
+                unique.push(port);
             }
         }
-
-        Err(ProviderError::Other(
-            "Could not find Antigravity API port".to_string(),
-        ))
-    }
-
-    /// Probe a single candidate port. Returns true if it answers the language server's
-    /// gRPC endpoint (HTTP 200 or 401).
-    async fn probe_api_port(client: &reqwest::Client, port: u16) -> bool {
-        let url = format!(
-            "https://127.0.0.1:{}/exa.language_server_pb.LanguageServerService/GetUnleashData",
-            port
-        );
-        match client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Connect-Protocol-Version", "1")
-            .body("{}")
-            .send()
-            .await
-        {
-            Ok(resp) => {
-                let code = resp.status().as_u16();
-                code == 200 || code == 401
-            }
-            Err(_) => false,
-        }
+        unique
     }
 
     /// Enumerate the TCP ports a given PID is listening on (Windows `lsof` equivalent).
@@ -361,7 +330,7 @@ impl AntigravityProvider {
     }
 
     /// Non-Windows platforms have no `Get-NetTCPConnection`; return an empty list by design so
-    /// the caller falls back to the heuristic candidate ports.
+    /// IDE discovery retains heuristic ports; CLI discovery requires owned listeners.
     #[cfg(not(windows))]
     fn listening_ports_for_pid(_pid: u32) -> Vec<u16> {
         Vec::new()
@@ -373,10 +342,8 @@ impl AntigravityProvider {
     /// pools that match Settings → Models). Falls back to per-model
     /// `remainingFraction` on `GetUserStatus` when the summary is missing.
     async fn fetch_user_status(&self) -> Result<UsageSnapshot, ProviderError> {
-        let process_info = Self::detect_process_info()?;
-        let api_port = Self::find_api_port(process_info.extension_port, process_info.pid).await?;
-
-        // SECURITY: TLS verification disabled for local language server (see find_api_port)
+        let processes = Self::detect_process_infos()?;
+        // SECURITY: self-signed TLS is allowed only for the loopback URLs below.
         let client = crate::core::credentialed_http_client_builder()
             .timeout(std::time::Duration::from_secs(8))
             .danger_accept_invalid_certs(true)
@@ -384,24 +351,118 @@ impl AntigravityProvider {
             .build()
             .map_err(|e| ProviderError::Other(e.to_string()))?;
 
-        let csrf_token = process_info
-            .extension_server_csrf_token
-            .as_deref()
-            .unwrap_or(&process_info.csrf_token);
-        let alt_csrf = process_info
-            .extension_server_csrf_token
-            .as_ref()
-            .filter(|_| !process_info.csrf_token.is_empty())
-            .map(|_| process_info.csrf_token.as_str());
+        let mut failure = None;
+        for process in processes {
+            let urls: Vec<String> = Self::api_port_candidates(&process)
+                .into_iter()
+                .map(|port| format!("https://127.0.0.1:{port}"))
+                .collect();
+            match self.fetch_from_candidates(&client, &process, &urls).await {
+                Ok(snapshot) => return Ok(snapshot),
+                Err(error) => {
+                    // Keep a reached-but-rejected server's diagnosis ahead of transport noise.
+                    if failure.is_none() || error.to_string().contains("HTTP ") {
+                        failure = Some(error);
+                    }
+                }
+            }
+        }
+        Err(failure
+            .unwrap_or_else(|| ProviderError::Other("Could not find Antigravity API port".into())))
+    }
 
-        // Plan / identity still live on GetUserStatus. Both reasons are kept:
-        // the full error for the debug log, and a status code for the message.
+    async fn fetch_from_candidates(
+        &self,
+        client: &reqwest::Client,
+        process: &ProcessInfo,
+        urls: &[String],
+    ) -> Result<UsageSnapshot, ProviderError> {
+        let mut failure = None;
+        for base_url in urls {
+            if !Self::probe_api_port(client, process, base_url).await {
+                continue;
+            }
+            // A 200/401 on GetUnleashData does not establish that this port serves
+            // usable quota. Try the actual quota methods, then the remaining ports.
+            match self.fetch_from_api(client, process, base_url).await {
+                Ok(snapshot) => return Ok(snapshot),
+                Err(error) => {
+                    tracing::debug!(%error, "Antigravity local quota candidate failed");
+                    if failure.is_none() || error.to_string().contains("HTTP ") {
+                        failure = Some(error);
+                    }
+                }
+            }
+        }
+        Err(failure.unwrap_or_else(|| {
+            ProviderError::Other(format!(
+                "Could not find Antigravity API port ({})",
+                process.connection_description()
+            ))
+        }))
+    }
+
+    async fn probe_api_port(
+        client: &reqwest::Client,
+        process: &ProcessInfo,
+        base_url: &str,
+    ) -> bool {
+        let (primary, alternate) = process.csrf_tokens();
+        let body = serde_json::json!({});
+        let mut unauthorized = false;
+        for token in std::iter::once(primary).chain(alternate) {
+            if let Ok(response) =
+                Self::connect_request(client, base_url, "GetUnleashData", &body, token)
+                    .timeout(std::time::Duration::from_secs(2))
+                    .send()
+                    .await
+            {
+                if response.status() == reqwest::StatusCode::OK {
+                    return true;
+                }
+                unauthorized |= response.status() == reqwest::StatusCode::UNAUTHORIZED;
+            }
+        }
+        // Keep rejected endpoints for a useful quota/auth diagnosis, but never
+        // let them stop probing the other ports or processes.
+        unauthorized
+    }
+
+    fn connect_request(
+        client: &reqwest::Client,
+        base_url: &str,
+        method: &str,
+        body: &serde_json::Value,
+        csrf_token: &str,
+    ) -> reqwest::RequestBuilder {
+        let url = format!("{base_url}/exa.language_server_pb.LanguageServerService/{method}");
+        let mut request = client
+            .post(url)
+            .header("Content-Type", "application/json")
+            .header("Connect-Protocol-Version", "1")
+            .json(body);
+        if !csrf_token.is_empty() {
+            request = request.header("X-Codeium-Csrf-Token", csrf_token);
+        }
+        request
+    }
+
+    async fn fetch_from_api(
+        &self,
+        client: &reqwest::Client,
+        process_info: &ProcessInfo,
+        base_url: &str,
+    ) -> Result<UsageSnapshot, ProviderError> {
+        let (csrf_token, alt_csrf) = process_info.csrf_tokens();
+
+        // Plan / identity still live on GetUserStatus. Keep safe error reasons;
+        // server response bodies may contain credentials and must not be logged.
         // Dropping them here is what left "no user status" with no way to tell
         // a signed-out server from a changed response shape (#412).
         let mut status_reason: Option<String> = None;
         let user_status = match Self::post_connect_json::<UserStatusResponse>(
-            &client,
-            api_port,
+            client,
+            base_url,
             "GetUserStatus",
             &serde_json::json!({
                 "metadata": {
@@ -423,7 +484,7 @@ impl AntigravityProvider {
                 response.user_status
             }
             Err(error) => {
-                tracing::debug!(%error, "Antigravity GetUserStatus failed");
+                tracing::debug!(reason = %short_reason(&error), "Antigravity GetUserStatus failed");
                 status_reason = Some(short_reason(&error));
                 None
             }
@@ -440,8 +501,8 @@ impl AntigravityProvider {
 
         // Shared group pools (what Antigravity Settings shows).
         let summary_reason: Option<String> = match Self::post_connect_json::<QuotaSummaryResponse>(
-            &client,
-            api_port,
+            client,
+            base_url,
             "RetrieveUserQuotaSummary",
             &serde_json::json!({}),
             csrf_token,
@@ -465,7 +526,7 @@ impl AntigravityProvider {
                 }
             },
             Err(error) => {
-                tracing::debug!(%error, "Antigravity RetrieveUserQuotaSummary failed");
+                tracing::debug!(reason = %short_reason(&error), "Antigravity RetrieveUserQuotaSummary failed");
                 Some(short_reason(&error))
             }
         };
@@ -473,8 +534,9 @@ impl AntigravityProvider {
         // Fallback: older path using per-model remainingFraction on GetUserStatus.
         let Some(status) = user_status else {
             return Err(ProviderError::Other(format!(
-                "Antigravity returned no user status and no quota summary ({})",
-                describe_unusable(status_reason.as_deref(), summary_reason.as_deref())
+                "Antigravity returned no user status and no quota summary ({}; {}; endpoint: {base_url})",
+                describe_unusable(status_reason.as_deref(), summary_reason.as_deref()),
+                process_info.connection_description()
             )));
         };
         let mut snapshot = self.parse_user_status(UserStatusResponse {
@@ -489,39 +551,20 @@ impl AntigravityProvider {
     /// POST a Connect/JSON method on the local language server.
     async fn post_connect_json<T: for<'de> Deserialize<'de>>(
         client: &reqwest::Client,
-        api_port: u16,
+        base_url: &str,
         method: &str,
         body: &serde_json::Value,
         csrf_token: &str,
         alt_csrf: Option<&str>,
     ) -> Result<T, ProviderError> {
-        let url = format!(
-            "https://127.0.0.1:{}/exa.language_server_pb.LanguageServerService/{method}",
-            api_port
-        );
-
-        let mut request = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Connect-Protocol-Version", "1")
-            .json(body);
-        if !csrf_token.is_empty() {
-            request = request.header("X-Codeium-Csrf-Token", csrf_token);
-        }
-
-        let resp = request
+        let resp = Self::connect_request(client, base_url, method, body, csrf_token)
             .send()
             .await
             .map_err(|e| ProviderError::Other(format!("API request failed: {}", e)))?;
 
         if !resp.status().is_success() {
             if let Some(alt) = alt_csrf {
-                let retry = client
-                    .post(&url)
-                    .header("Content-Type", "application/json")
-                    .header("Connect-Protocol-Version", "1")
-                    .header("X-Codeium-Csrf-Token", alt)
-                    .json(body)
+                let retry = Self::connect_request(client, base_url, method, body, alt)
                     .send()
                     .await;
                 if let Ok(retry) = retry
@@ -534,9 +577,23 @@ impl AntigravityProvider {
                 }
             }
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            // Only preserve an exact, known CSRF diagnosis. Never echo the body.
+            let detail = if status == reqwest::StatusCode::UNAUTHORIZED {
+                resp.json::<serde_json::Value>()
+                    .await
+                    .ok()
+                    .filter(|value| value["code"] == "unauthenticated")
+                    .and_then(|value| match value["message"].as_str() {
+                        Some("missing CSRF token") => Some("missing CSRF token"),
+                        Some("invalid CSRF token") => Some("invalid CSRF token"),
+                        _ => None,
+                    })
+            } else {
+                None
+            };
             return Err(ProviderError::Other(format!(
-                "API error {status} on {method}: {text}"
+                "API error {status} on {method}{}",
+                detail.map(|text| format!(": {text}")).unwrap_or_default()
             )));
         }
 
@@ -672,10 +729,52 @@ impl Provider for AntigravityProvider {
 }
 
 struct ProcessInfo {
+    is_cli: bool,
     csrf_token: String,
     extension_server_csrf_token: Option<String>,
     extension_port: u16,
     pid: Option<u32>,
+}
+
+impl ProcessInfo {
+    fn csrf_tokens(&self) -> (&str, Option<&str>) {
+        let primary = self
+            .extension_server_csrf_token
+            .as_deref()
+            .unwrap_or(&self.csrf_token);
+        let alternate = self
+            .extension_server_csrf_token
+            .as_ref()
+            .filter(|_| !self.csrf_token.is_empty() && self.csrf_token != primary)
+            .map(|_| self.csrf_token.as_str());
+        (primary, alternate)
+    }
+
+    fn connection_description(&self) -> String {
+        let source = if self.extension_server_csrf_token.is_some() {
+            "--extension_server_csrf_token"
+        } else if !self.csrf_token.is_empty() {
+            "--csrf_token"
+        } else {
+            "none (tokenless CLI)"
+        };
+        format!(
+            "process: {}; PID: {}; CSRF source: {source}{}",
+            if self.is_cli {
+                "agy/Antigravity CLI"
+            } else {
+                "IDE language server"
+            },
+            self.pid
+                .map(|pid| pid.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            if self.csrf_tokens().1.is_some() {
+                "; alternate: --csrf_token"
+            } else {
+                ""
+            }
+        )
+    }
 }
 
 // API Response types
@@ -948,8 +1047,20 @@ fn model_window_id(config: &ModelConfig) -> String {
 fn short_reason(error: &ProviderError) -> String {
     let text = error.to_string();
     if let Some(rest) = text.strip_prefix("API error ") {
+        let csrf_detail = if rest.starts_with("401 ") {
+            ["missing CSRF token", "invalid CSRF token"]
+                .into_iter()
+                .find(|detail| rest.ends_with(&format!(": {detail}")))
+        } else {
+            None
+        };
         return match rest.split_whitespace().next() {
-            Some(code) => format!("HTTP {code}"),
+            Some(code) => format!(
+                "HTTP {code}{}",
+                csrf_detail
+                    .map(|detail| format!(" ({detail})"))
+                    .unwrap_or_default()
+            ),
             None => "API error".to_string(),
         };
     }
@@ -1235,7 +1346,7 @@ mod tests {
         assert!(AntigravityProvider::parse_process_info(output).is_none());
     }
 
-    /// Antigravity CLI (`agy`) hosts the same Connect API without `--csrf_token`.
+    /// Older Antigravity CLI (`agy`) versions may omit `--csrf_token`.
     /// Detection must accept the process so PID port enumeration can find the API.
     #[test]
     fn parses_antigravity_cli_agy_without_csrf() {
@@ -1247,7 +1358,7 @@ mod tests {
         assert_eq!(process.pid, Some(199364));
         assert!(
             process.csrf_token.is_empty(),
-            "CLI has no CSRF; empty token is correct"
+            "keep a tokenless CLI candidate for older versions"
         );
         assert_eq!(process.extension_port, 0);
     }
@@ -1349,6 +1460,197 @@ mod tests {
 
         assert_eq!(process.pid, Some(199364));
         assert!(process.csrf_token.is_empty());
+    }
+
+    #[test]
+    fn parses_complete_agy_tokens_in_quoted_and_equals_forms() {
+        for flags in [
+            r#"--csrf_token "AbC_token+123/=" --extension_server_csrf_token "EXT_token-456""#,
+            "--csrf_token=AbC_token+123/= --extension_server_csrf_token=EXT_token-456",
+        ] {
+            let output = format!("42\tagy.exe\tagy.exe {flags}");
+            let process = AntigravityProvider::parse_process_info(&output).unwrap();
+            assert_eq!(process.csrf_token, "AbC_token+123/=");
+            assert_eq!(
+                process.csrf_tokens(),
+                ("EXT_token-456", Some("AbC_token+123/="))
+            );
+            let description = process.connection_description();
+            assert!(description.contains("PID: 42"));
+            assert!(description.contains("--extension_server_csrf_token"));
+            assert!(!description.contains("AbC_token"));
+            assert!(!description.contains("EXT_token-456"));
+        }
+    }
+
+    #[test]
+    fn missing_token_value_does_not_consume_the_next_flag() {
+        let process = AntigravityProvider::parse_process_info(
+            "42\tagy.exe\tagy.exe --csrf_token --https_server_port 0",
+        )
+        .unwrap();
+        assert!(process.csrf_token.is_empty());
+    }
+
+    #[test]
+    fn collects_all_candidates_without_mixing_their_credentials() {
+        let output = "42\tagy.exe\tagy.exe --csrf_token CLI_token\n\
+            43\tlanguage_server.exe\tlanguage_server.exe --csrf_token IDE_token --https_server_port 0";
+        let processes = AntigravityProvider::parse_process_infos(output);
+        assert_eq!(processes.len(), 2);
+        assert!(processes[0].is_cli);
+        assert!(!processes[1].is_cli);
+        assert_eq!(processes[0].csrf_tokens(), ("CLI_token", None));
+        assert_eq!(processes[1].csrf_tokens(), ("IDE_token", None));
+    }
+
+    #[test]
+    fn cli_without_pid_cannot_send_its_token_to_guessed_ports() {
+        let process = AntigravityProvider::parse_process_info(
+            "agy.exe --csrf_token private-token --https_server_port 53835",
+        )
+        .unwrap();
+        assert!(AntigravityProvider::api_port_candidates(&process).is_empty());
+    }
+
+    fn mock_quota_endpoint(
+        server: &mut mockito::ServerGuard,
+        method: &str,
+        status: usize,
+        body: &str,
+        token: mockito::Matcher,
+    ) -> mockito::Mock {
+        server
+            .mock(
+                "POST",
+                format!("/exa.language_server_pb.LanguageServerService/{method}").as_str(),
+            )
+            .match_header("content-type", "application/json")
+            .match_header("connect-protocol-version", "1")
+            .match_header("x-codeium-csrf-token", token)
+            .with_status(status)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create()
+    }
+
+    #[tokio::test]
+    async fn rejected_quota_port_does_not_shadow_a_working_tokenless_cli_port() {
+        let mut rejected = mockito::Server::new_async().await;
+        let mut working = mockito::Server::new_async().await;
+        let mut mocks = Vec::new();
+        for method in [
+            "GetUnleashData",
+            "GetUserStatus",
+            "RetrieveUserQuotaSummary",
+        ] {
+            mocks.push(mock_quota_endpoint(
+                &mut rejected,
+                method,
+                401,
+                r#"{"code":"unauthenticated","message":"missing CSRF token"}"#,
+                mockito::Matcher::Missing,
+            ));
+        }
+        mocks.push(mock_quota_endpoint(
+            &mut working,
+            "GetUnleashData",
+            200,
+            "{}",
+            mockito::Matcher::Missing,
+        ));
+        mocks.push(mock_quota_endpoint(
+            &mut working,
+            "GetUserStatus",
+            200,
+            r#"{"userStatus":{"email":"cli@example.test"}}"#,
+            mockito::Matcher::Missing,
+        ));
+        mocks.push(mock_quota_endpoint(&mut working, "RetrieveUserQuotaSummary", 200,
+            r#"{"response":{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-weekly","displayName":"Weekly Limit","window":"weekly","remainingFraction":0.75}]}]}}"#,
+            mockito::Matcher::Missing));
+        let process = AntigravityProvider::parse_process_info("42\tagy.exe\tagy.exe").unwrap();
+        let snapshot = AntigravityProvider::new()
+            .fetch_from_candidates(
+                &reqwest::Client::new(),
+                &process,
+                &[rejected.url(), working.url()],
+            )
+            .await
+            .unwrap();
+        assert!((snapshot.primary.used_percent - 25.0).abs() < 0.01);
+        assert_eq!(snapshot.account_email.as_deref(), Some("cli@example.test"));
+        for mock in mocks {
+            mock.assert();
+        }
+    }
+
+    #[tokio::test]
+    async fn ide_extension_token_and_language_server_retry_still_work() {
+        let mut server = mockito::Server::new_async().await;
+        let first = mock_quota_endpoint(
+            &mut server,
+            "GetUserStatus",
+            401,
+            r#"{"code":"unauthenticated","message":"invalid CSRF token"}"#,
+            mockito::Matcher::Exact("extension-token".into()),
+        );
+        let retry = mock_quota_endpoint(
+            &mut server,
+            "GetUserStatus",
+            200,
+            r#"{"userStatus":{"email":"ide@example.test"}}"#,
+            mockito::Matcher::Exact("language-token".into()),
+        );
+        let process = AntigravityProvider::parse_process_info(
+            "43\tlanguage_server.exe\tlanguage_server.exe --csrf_token language-token --extension_server_csrf_token extension-token --https_server_port 0",
+        ).unwrap();
+        let (primary, alternate) = process.csrf_tokens();
+        let response: UserStatusResponse = AntigravityProvider::post_connect_json(
+            &reqwest::Client::new(),
+            &server.url(),
+            "GetUserStatus",
+            &serde_json::json!({}),
+            primary,
+            alternate,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            response.user_status.unwrap().email.as_deref(),
+            Some("ide@example.test")
+        );
+        first.assert();
+        retry.assert();
+    }
+
+    #[tokio::test]
+    async fn csrf_failures_include_safe_connection_context_without_echoing_the_body() {
+        let mut server = mockito::Server::new_async().await;
+        let mut mocks = Vec::new();
+        for method in [
+            "GetUnleashData",
+            "GetUserStatus",
+            "RetrieveUserQuotaSummary",
+        ] {
+            mocks.push(mock_quota_endpoint(&mut server, method, 401,
+                r#"{"code":"unauthenticated","message":"missing CSRF token","private":"secret-value"}"#,
+                mockito::Matcher::Missing));
+        }
+        let process = AntigravityProvider::parse_process_info("42\tagy.exe\tagy.exe").unwrap();
+        let error = AntigravityProvider::new()
+            .fetch_from_candidates(&reqwest::Client::new(), &process, &[server.url()])
+            .await
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("HTTP 401 (missing CSRF token)"));
+        assert!(error.contains("agy/Antigravity CLI; PID: 42; CSRF source: none (tokenless CLI)"));
+        assert!(error.contains(&server.url()));
+        assert!(!error.contains("secret-value"));
+        for mock in mocks {
+            mock.assert();
+        }
     }
 
     fn make_response(models: Vec<(&str, f64)>) -> UserStatusResponse {
