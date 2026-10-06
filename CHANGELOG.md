@@ -2,6 +2,17 @@
 
 ## [Ceiling] Unreleased
 
+## [Ceiling] 1.5.44 - 2026-10-06
+
+Antigravity CLI usage reads correctly with newer agy versions and reports sign-in and quota states clearly.
+
+### Fixed
+- **Newer Antigravity CLI versions explain the required access token.** For agy 1.2.2 and later, Ceiling explains how to start agy with `--csrf_token` and checks all matching processes and candidate ports. Fixes #412. Thanks to @WayPointStack.
+- **Antigravity reports sign-in and exhausted quotas accurately.** Signed-out sessions show "not signed in" instead of a false 0% used, and exhausted model quotas show 100% used.
+
+### Internal
+- Added regression tests for taskbar capacity strip repainting and relative time wording.
+
 ## [Ceiling] 1.5.43 - 2026-10-02
 
 Overview now scrolls through every provider when the window is short.
