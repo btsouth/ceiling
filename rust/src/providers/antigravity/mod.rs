@@ -400,7 +400,7 @@ impl AntigravityProvider {
     ) -> Result<UsageSnapshot, ProviderError> {
         let mut failure = None;
         for base_url in urls {
-            if !Self::probe_api_port(client, process, base_url).await {
+            if !Self::probe_api_port(client, base_url).await {
                 continue;
             }
             // A 200/401 on GetUnleashData does not establish that this port serves
@@ -423,30 +423,27 @@ impl AntigravityProvider {
         }))
     }
 
-    async fn probe_api_port(
-        client: &reqwest::Client,
-        process: &ProcessInfo,
-        base_url: &str,
-    ) -> bool {
-        let (primary, alternate) = process.csrf_tokens();
-        let body = serde_json::json!({});
-        let mut unauthorized = false;
-        for token in std::iter::once(primary).chain(alternate) {
-            if let Ok(response) =
-                Self::connect_request(client, base_url, "GetUnleashData", &body, token)
-                    .timeout(std::time::Duration::from_secs(2))
-                    .send()
-                    .await
-            {
-                if response.status() == reqwest::StatusCode::OK {
-                    return true;
-                }
-                unauthorized |= response.status() == reqwest::StatusCode::UNAUTHORIZED;
-            }
-        }
+    /// Recognize the language server without sending credentials: guessed
+    /// ports may belong to another local TLS listener.
+    async fn probe_api_port(client: &reqwest::Client, base_url: &str) -> bool {
         // Keep rejected endpoints for a useful quota/auth diagnosis, but never
         // let them stop probing the other ports or processes.
-        unauthorized
+        Self::connect_request(
+            client,
+            base_url,
+            "GetUnleashData",
+            &serde_json::json!({}),
+            "",
+        )
+        .timeout(std::time::Duration::from_secs(2))
+        .send()
+        .await
+        .is_ok_and(|response| {
+            matches!(
+                response.status(),
+                reqwest::StatusCode::OK | reqwest::StatusCode::UNAUTHORIZED
+            )
+        })
     }
 
     fn connect_request(
