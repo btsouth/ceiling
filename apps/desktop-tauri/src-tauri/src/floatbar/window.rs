@@ -13,7 +13,7 @@ use tauri::{LogicalPosition, LogicalSize, Manager, PhysicalPosition, WebviewUrl}
 
 use crate::geometry_store;
 
-use super::placement::Point;
+use super::placement::{Point, Rect, is_on_any_monitor};
 use super::taskbar::TaskbarLayout;
 
 pub const FLOATBAR_LABEL: &str = "floatbar";
@@ -70,6 +70,11 @@ pub fn show(
     crate::webview_recovery::reclaim_dead_window(app, FLOATBAR_LABEL)?;
 
     if let Some(window) = app.get_webview_window(FLOATBAR_LABEL) {
+        // The bar has no taskbar button, so a minimized bar can only come back
+        // from here (#501).
+        if window.is_minimized().unwrap_or(false) {
+            let _ = window.unminimize();
+        }
         apply_no_activate(&window);
         apply_opacity(&window, opacity);
         apply_click_through(&window, click_through);
@@ -112,7 +117,8 @@ pub fn show(
     // Restore prior geometry if we have one. Otherwise, taskbar style opens
     // near the bottom while the original floating style keeps its top-center
     // placement.
-    let stored_geometry = geometry_store::load_entry(FLOATBAR_LABEL);
+    let stored_geometry = geometry_store::load_entry(FLOATBAR_LABEL)
+        .filter(|g| stored_geometry_is_on_screen(&win, g, (w, h)));
     let has_stored_geometry = stored_geometry.is_some();
     if let Some(g) = stored_geometry {
         let _ = win.set_position(LogicalPosition::new(g.x as f64, g.y as f64));
@@ -163,9 +169,17 @@ pub fn hide(app: &tauri::AppHandle) -> Result<(), String> {
 /// callbacks deliver a `&Window` while imperative call sites have a
 /// `&WebviewWindow`.
 pub fn remember_geometry<R: tauri::Runtime, M: WindowGeometry<R>>(window: &M) {
+    // Minimizing moves the window to Windows' parking spot; saving that would
+    // reopen the bar off-screen on every launch (#501).
+    if window.is_minimized().unwrap_or(false) {
+        return;
+    }
     let Ok(pos) = window.outer_position() else {
         return;
     };
+    if is_minimized_position(pos.x, pos.y) {
+        return;
+    }
     let Ok(size) = window.outer_size() else {
         return;
     };
@@ -181,6 +195,56 @@ pub fn remember_geometry<R: tauri::Runtime, M: WindowGeometry<R>>(window: &M) {
     );
 }
 
+/// Windows reports a minimized top-level window at (-32000, -32000).
+fn is_minimized_position(x: i32, y: i32) -> bool {
+    const MINIMIZED_COORDINATE: i32 = -32000;
+    x <= MINIMIZED_COORDINATE && y <= MINIMIZED_COORDINATE
+}
+
+/// Whether a remembered position still lands on a connected monitor.
+///
+/// Stored geometry is logical, divided by the scale of the monitor the bar was
+/// on when saved, so each monitor is compared in its own logical space.
+fn stored_geometry_is_on_screen(
+    window: &tauri::WebviewWindow,
+    stored: &geometry_store::StoredGeometry,
+    default_size: (f64, f64),
+) -> bool {
+    let monitors = window
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|monitor| {
+            let scale = monitor.scale_factor().max(f64::EPSILON);
+            let left = (monitor.position().x as f64 / scale).round() as i32;
+            let top = (monitor.position().y as f64 / scale).round() as i32;
+            Rect {
+                left,
+                top,
+                right: left.saturating_add((monitor.size().width as f64 / scale).round() as i32),
+                bottom: top.saturating_add((monitor.size().height as f64 / scale).round() as i32),
+            }
+        })
+        .collect::<Vec<_>>();
+    let width = stored.width.map_or(default_size.0 as i32, |w| w as i32);
+    let height = stored.height.map_or(default_size.1 as i32, |h| h as i32);
+    let bar = Rect {
+        left: stored.x,
+        top: stored.y,
+        right: stored.x.saturating_add(width),
+        bottom: stored.y.saturating_add(height),
+    };
+    let on_screen = is_on_any_monitor(bar, &monitors);
+    if !on_screen {
+        tracing::info!(
+            x = stored.x,
+            y = stored.y,
+            "Remembered floating bar position is off-screen; using the default placement"
+        );
+    }
+    on_screen
+}
+
 /// Subset of `tauri::WebviewWindow` / `tauri::Window` used by
 /// [`remember_geometry`]. Both types implement the underlying methods, but
 /// they don't share a public trait — this private trait bridges them so we
@@ -190,6 +254,7 @@ pub trait WindowGeometry<R: tauri::Runtime> {
     fn outer_position(&self) -> tauri::Result<tauri::PhysicalPosition<i32>>;
     fn outer_size(&self) -> tauri::Result<tauri::PhysicalSize<u32>>;
     fn scale_factor(&self) -> tauri::Result<f64>;
+    fn is_minimized(&self) -> tauri::Result<bool>;
 }
 
 impl<R: tauri::Runtime> WindowGeometry<R> for tauri::WebviewWindow<R> {
@@ -202,6 +267,9 @@ impl<R: tauri::Runtime> WindowGeometry<R> for tauri::WebviewWindow<R> {
     fn scale_factor(&self) -> tauri::Result<f64> {
         tauri::WebviewWindow::scale_factor(self)
     }
+    fn is_minimized(&self) -> tauri::Result<bool> {
+        tauri::WebviewWindow::is_minimized(self)
+    }
 }
 
 impl<R: tauri::Runtime> WindowGeometry<R> for tauri::Window<R> {
@@ -213,6 +281,9 @@ impl<R: tauri::Runtime> WindowGeometry<R> for tauri::Window<R> {
     }
     fn scale_factor(&self) -> tauri::Result<f64> {
         tauri::Window::scale_factor(self)
+    }
+    fn is_minimized(&self) -> tauri::Result<bool> {
+        tauri::Window::is_minimized(self)
     }
 }
 
@@ -339,6 +410,11 @@ pub fn install_z_order_guard(app: tauri::AppHandle) {
                     Z_ORDER_SAFETY_TICKS,
                 );
                 if visible && repair_z_order {
+                    // Win+M and similar can minimize the bar, and with no
+                    // taskbar button nothing else would restore it (#501).
+                    if window.is_minimized().unwrap_or(false) {
+                        let _ = window.unminimize();
+                    }
                     apply_always_on_top(&window);
                 }
                 ticks = ticks.wrapping_add(1);
@@ -665,6 +741,13 @@ mod tests {
             initial_size("diagonal"),
             (FLOATBAR_DEFAULT_WIDTH_H, FLOATBAR_DEFAULT_HEIGHT_H)
         );
+    }
+
+    #[test]
+    fn minimized_parking_spot_is_never_a_remembered_position() {
+        assert!(is_minimized_position(-32000, -32000));
+        assert!(!is_minimized_position(-1280, 400));
+        assert!(!is_minimized_position(-32000, 0));
     }
 
     #[test]

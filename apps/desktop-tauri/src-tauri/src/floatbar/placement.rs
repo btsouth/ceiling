@@ -161,6 +161,25 @@ fn nearest_fitting_start(preferred: i32, gaps: &[Span], extent: i32) -> Option<i
         .min_by_key(|candidate| (i64::from(*candidate) - i64::from(preferred)).abs())
 }
 
+/// Whether a remembered bar rectangle would reopen where it can be seen.
+///
+/// The bar's center must land on a connected monitor. A minimized position
+/// (-32000, -32000) or a monitor unplugged since the last run would otherwise
+/// reopen the bar off-screen, and its skip-taskbar window leaves no way to
+/// bring it back (#501). With no monitors to compare against, the stored
+/// position is trusted as before.
+pub fn is_on_any_monitor(window: Rect, monitors: &[Rect]) -> bool {
+    let center = Point {
+        x: window.left.saturating_add(window.width() / 2),
+        y: window.top.saturating_add(window.height() / 2),
+    };
+    monitors.is_empty()
+        || monitors.iter().any(|monitor| {
+            (monitor.left..monitor.right).contains(&center.x)
+                && (monitor.top..monitor.bottom).contains(&center.y)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +298,60 @@ mod tests {
         let point =
             place_in_taskbar(TASKBAR, &obstacles, 360, 36, Point { x: 600, y: 0 }, 8, 6).unwrap();
         assert_eq!(point.x, 906);
+    }
+
+    const PRIMARY: Rect = Rect {
+        left: 0,
+        top: 0,
+        right: 1920,
+        bottom: 1080,
+    };
+    const LEFT_MONITOR: Rect = Rect {
+        left: -1280,
+        top: 0,
+        right: 0,
+        bottom: 1024,
+    };
+
+    fn bar_at(left: i32, top: i32) -> Rect {
+        Rect {
+            left,
+            top,
+            right: left + 222,
+            bottom: top + 44,
+        }
+    }
+
+    #[test]
+    fn minimized_position_is_not_on_any_monitor() {
+        assert!(!is_on_any_monitor(
+            bar_at(-32000, -32000),
+            &[PRIMARY, LEFT_MONITOR]
+        ));
+    }
+
+    #[test]
+    fn position_on_a_disconnected_monitor_is_not_restorable() {
+        assert!(!is_on_any_monitor(bar_at(-900, 400), &[PRIMARY]));
+    }
+
+    #[test]
+    fn positions_on_connected_monitors_are_restorable() {
+        assert!(is_on_any_monitor(bar_at(800, 1038), &[PRIMARY]));
+        assert!(is_on_any_monitor(
+            bar_at(-900, 400),
+            &[PRIMARY, LEFT_MONITOR]
+        ));
+    }
+
+    #[test]
+    fn bar_mostly_past_a_monitor_edge_is_not_restorable() {
+        // Only 20px of the bar remains on the primary monitor.
+        assert!(!is_on_any_monitor(bar_at(1900, 400), &[PRIMARY]));
+    }
+
+    #[test]
+    fn stored_position_is_trusted_without_monitor_information() {
+        assert!(is_on_any_monitor(bar_at(-32000, -32000), &[]));
     }
 }
