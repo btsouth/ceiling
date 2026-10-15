@@ -2,6 +2,16 @@
 
 ## [Ceiling] Unreleased
 
+## [Ceiling] 1.5.45 - 2026-10-14
+
+The floating bar no longer gets stuck off-screen after it is minimized.
+
+### Fixed
+- **The floating bar comes back after being minimized.** Ceiling no longer saves the bar's position while it is minimized, ignores a saved position that is not on a connected monitor, and restores the bar if it gets minimized. Fixes #501. Thanks to @DohunHyun.
+
+### Internal
+- Dependency updates bring `rustls`, `quinn-proto` and `source-map-js` past published security advisories.
+
 ## [Ceiling] 1.5.44 - 2026-10-06
 
 Antigravity CLI usage reads correctly with newer agy versions and reports sign-in and quota states clearly.
