@@ -25,6 +25,13 @@ function apply(theme: ResolvedTheme) {
   document.documentElement.style.colorScheme = theme;
 }
 
+/**
+ * Applies the user's theme preference at runtime.
+ *
+ * When `preference === "auto"`, subscribes to `prefers-color-scheme` so the
+ * UI flips along with the OS. Explicit "light"/"dark" overrides detach from
+ * the media query.
+ */
 export function useTheme(preference: ThemePreference): void {
   useEffect(() => {
     apply(resolveTheme(preference));
@@ -46,6 +53,7 @@ export function useTheme(preference: ThemePreference): void {
     if (typeof mq?.addEventListener === "function") {
       mq.addEventListener("change", handle);
     } else {
+      // Safari < 14 fallback.
       mq?.addListener(handle);
     }
     window.addEventListener("focus", refresh);

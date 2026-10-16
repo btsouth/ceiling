@@ -1353,6 +1353,7 @@ body:has(.taskbar-flyout-frame) #root {
   --tf-more: rgba(242, 247, 255, 0.58);
   --tf-unavailable-label: rgba(242, 247, 255, 0.78);
   --tf-unavailable-value: var(--usage-bar-high, #e3b341);
+  /* Keep white labels legible when Windows reports a light taskbar color. */
   --tf-bg: color-mix(in srgb, var(--taskbar-surface) 12%, #1e2229);
   --tf-gradient: linear-gradient(145deg, rgba(255, 255, 255, 0.065), rgba(0, 0, 0, 0.09));
   --tf-highlight: rgba(255, 255, 255, 0.075);
