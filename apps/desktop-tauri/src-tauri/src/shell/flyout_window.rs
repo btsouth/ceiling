@@ -163,7 +163,6 @@ pub fn open_or_focus(app: &AppHandle, position: Option<(i32, i32)>) -> Result<()
         .resizable(false)
         .always_on_top(true)
         .skip_taskbar(true)
-        .theme(Some(tauri::Theme::Dark))
         // CRITICAL: dynamically-built windows default to drag-drop ENABLED,
         // which intercepts the HTML5 draggable events the provider grid's
         // drag-reorder (ProviderGrid.tsx) relies on — see `main`'s

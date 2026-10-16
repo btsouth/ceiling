@@ -25,7 +25,7 @@ export function ProviderIcon({
   // tinted even when a parent theme only forwards --brand.
   const brandStyle = {
     ...dims,
-    color: entry.brandColor,
+    color: entry.monochrome ? "var(--text-primary)" : entry.brandColor,
     ["--provider-brand" as string]: entry.brandColor,
   };
 
@@ -33,6 +33,7 @@ export function ProviderIcon({
     return (
       <span
         className={`provider-icon provider-icon--svg${className ? " " + className : ""}`}
+        data-provider={entry.id}
         style={brandStyle}
         title={title}
         aria-hidden={title ? undefined : true}
@@ -45,6 +46,7 @@ export function ProviderIcon({
   return (
     <span
       className={`provider-icon provider-icon--letter${className ? " " + className : ""}`}
+      data-provider={entry.id}
       style={brandStyle}
       title={title}
       aria-hidden={title ? undefined : true}

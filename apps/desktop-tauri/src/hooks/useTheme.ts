@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { ThemePreference } from "../types/bridge";
 
 export type ResolvedTheme = "light" | "dark";
@@ -35,19 +36,48 @@ export function useTheme(preference: ThemePreference): void {
   useEffect(() => {
     apply(resolveTheme(preference));
 
-    if (preference !== "auto" || typeof window === "undefined" || !window.matchMedia) {
+    if (preference !== "auto" || typeof window === "undefined") {
       return;
     }
 
-    const mq = window.matchMedia(MEDIA_QUERY);
-    const handle = (event: MediaQueryListEvent) => apply(event.matches ? "light" : "dark");
+    let active = true;
+    let unlisten: (() => void) | undefined;
+    const mq = window.matchMedia?.(MEDIA_QUERY);
+    const handle = (event: MediaQueryListEvent) => {
+      if (active) apply(event.matches ? "light" : "dark");
+    };
+    const refresh = () => {
+      if (active) apply(resolveTheme("auto"));
+    };
 
-    if (typeof mq.addEventListener === "function") {
+    if (typeof mq?.addEventListener === "function") {
       mq.addEventListener("change", handle);
-      return () => mq.removeEventListener("change", handle);
+    } else {
+      // Safari < 14 fallback.
+      mq?.addListener(handle);
     }
-    // Safari < 14 fallback.
-    mq.addListener(handle);
-    return () => mq.removeListener(handle);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+
+    try {
+      void getCurrentWebviewWindow().onThemeChanged(({ payload }) => {
+        if (active && (payload === "light" || payload === "dark")) apply(payload);
+      }).then((stop) => {
+        if (active) unlisten = stop;
+        else stop();
+      }).catch(() => {});
+    } catch {}
+
+    return () => {
+      active = false;
+      unlisten?.();
+      if (typeof mq?.addEventListener === "function") {
+        mq.removeEventListener("change", handle);
+      } else {
+        mq?.removeListener(handle);
+      }
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
   }, [preference]);
 }

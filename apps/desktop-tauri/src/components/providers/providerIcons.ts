@@ -70,11 +70,12 @@ export interface ProviderIcon {
   fallbackLetter: string;
   /** Raw SVG markup when the provider ships a brand asset. */
   svgPath?: string;
+  monochrome?: boolean;
 }
 
 const RAW: Record<string, string> = {
   abacus: tint(abacus),
-  alibaba: tint(alibaba),
+  alibaba: tint(alibaba).replace(/fill="#111111"/gi, 'fill="currentColor"'),
   amp: tint(amp),
   antigravity: tint(antigravity),
   augment: tint(augment),
@@ -126,8 +127,8 @@ const RAW: Record<string, string> = {
  * letters from `rust/src/native_ui/theme.rs::{provider_color, provider_icon}`.
  */
 export const PROVIDER_ICON_REGISTRY: Record<string, ProviderIcon> = {
-  alibaba:     { id: "alibaba",     brandColor: "#ff6a00", fallbackLetter: "阿", svgPath: RAW.alibaba },
-  alibabatokenplan: { id: "alibabatokenplan", brandColor: "#ff6a00", fallbackLetter: "阿", svgPath: RAW.alibaba },
+  alibaba:     { id: "alibaba",     brandColor: "#ff6a00", monochrome: true, fallbackLetter: "阿", svgPath: RAW.alibaba },
+  alibabatokenplan: { id: "alibabatokenplan", brandColor: "#ff6a00", monochrome: true, fallbackLetter: "阿", svgPath: RAW.alibaba },
   amp:         { id: "amp",         brandColor: "#dc2626", fallbackLetter: "⚡", svgPath: RAW.amp },
   antigravity: { id: "antigravity", brandColor: "#60ba7e", fallbackLetter: "◉", svgPath: RAW.antigravity },
   augment:     { id: "augment",     brandColor: "#6366f1", fallbackLetter: "A", svgPath: RAW.augment },
@@ -138,12 +139,12 @@ export const PROVIDER_ICON_REGISTRY: Record<string, ProviderIcon> = {
   cursor:      { id: "cursor",      brandColor: "#00bfa5", fallbackLetter: "▸", svgPath: RAW.cursor },
   deepgram:    { id: "deepgram",    brandColor: "#13ef93", fallbackLetter: "D", svgPath: RAW.deepgram },
   deepseek:    { id: "deepseek",    brandColor: "#527df0", fallbackLetter: "D", svgPath: RAW.deepseek },
-  elevenlabs:  { id: "elevenlabs",  brandColor: "#111827", fallbackLetter: "E", svgPath: RAW.elevenlabs },
+  elevenlabs:  { id: "elevenlabs",  brandColor: "#111827", monochrome: true, fallbackLetter: "E", svgPath: RAW.elevenlabs },
   factory:     { id: "factory",     brandColor: "#ff6b35", fallbackLetter: "◎", svgPath: RAW.factory },
   gemini:      { id: "gemini",      brandColor: "#ab87ea", fallbackLetter: "✦", svgPath: RAW.gemini },
   // Monochrome xAI mark: light silver so it reads on Ceiling's dark chrome
   // (official usage is black-on-white or white-on-black; we recolor via currentColor).
-  grok:        { id: "grok",        brandColor: "#e7e9ea", fallbackLetter: "G", svgPath: RAW.grok },
+  grok:        { id: "grok",        brandColor: "#e7e9ea", monochrome: true, fallbackLetter: "G", svgPath: RAW.grok },
   groq:        { id: "groq",        brandColor: "#f55036", fallbackLetter: "G", svgPath: RAW.groq },
   jetbrains:   { id: "jetbrains",   brandColor: "#ff3399", fallbackLetter: "J", svgPath: RAW.jetbrains },
   kilo:        { id: "kilo",        brandColor: "#5d87ff", fallbackLetter: "K", svgPath: RAW.kilo },
@@ -154,7 +155,7 @@ export const PROVIDER_ICON_REGISTRY: Record<string, ProviderIcon> = {
   llmproxy:    { id: "llmproxy",    brandColor: "#4f46e5", fallbackLetter: "L", svgPath: RAW.llmproxy },
   minimax:     { id: "minimax",     brandColor: "#fe603c", fallbackLetter: "M", svgPath: RAW.minimax },
   mistral:     { id: "mistral",     brandColor: "#ff500f", fallbackLetter: "M", svgPath: RAW.mistral },
-  ollama:      { id: "ollama",      brandColor: "#8b95b0", fallbackLetter: "○", svgPath: RAW.ollama },
+  ollama:      { id: "ollama",      brandColor: "#8b95b0", monochrome: true, fallbackLetter: "○", svgPath: RAW.ollama },
   azureopenai: { id: "azureopenai", brandColor: "#0078d4", fallbackLetter: "A" },
   t3chat:      { id: "t3chat",      brandColor: "#8b5cf6", fallbackLetter: "T", svgPath: RAW.t3chat },
   // OpenCode's square-ring mark is monochrome (black on white, white on black),
@@ -163,9 +164,9 @@ export const PROVIDER_ICON_REGISTRY: Record<string, ProviderIcon> = {
   // cannot reach, so it has to be one shade that survives both themes rather
   // than either end of the brand. This is the mid gray `--chart-opencode`
   // already uses; a near-white here vanished on the light dashboard.
-  opencode:    { id: "opencode",    brandColor: "#9ca3af", fallbackLetter: "○", svgPath: RAW.opencode },
-  opencodego:  { id: "opencodego",  brandColor: "#9ca3af", fallbackLetter: "○", svgPath: RAW.opencodego },
-  openrouter:  { id: "openrouter",  brandColor: "#6b7280", fallbackLetter: "R", svgPath: RAW.openrouter },
+  opencode:    { id: "opencode",    brandColor: "#9ca3af", monochrome: true, fallbackLetter: "○", svgPath: RAW.opencode },
+  opencodego:  { id: "opencodego",  brandColor: "#9ca3af", monochrome: true, fallbackLetter: "○", svgPath: RAW.opencodego },
+  openrouter:  { id: "openrouter",  brandColor: "#6b7280", monochrome: true, fallbackLetter: "R", svgPath: RAW.openrouter },
   perplexity:  { id: "perplexity",  brandColor: "#1fb8cd", fallbackLetter: "P", svgPath: RAW.perplexity },
   vertexai:    { id: "vertexai",    brandColor: "#4285f4", fallbackLetter: "△", svgPath: RAW.vertexai },
   warp:        { id: "warp",        brandColor: "#6366f1", fallbackLetter: "W", svgPath: RAW.warp },
@@ -176,7 +177,7 @@ export const PROVIDER_ICON_REGISTRY: Record<string, ProviderIcon> = {
   nanogpt:     { id: "nanogpt",     brandColor: "#687fa1", fallbackLetter: "N" },
   infini:      { id: "infini",      brandColor: "#687fa1", fallbackLetter: "I" },
   abacus:      { id: "abacus",      brandColor: "#7c3aed", fallbackLetter: "A", svgPath: RAW.abacus },
-  manus:       { id: "manus",       brandColor: "#34322d", fallbackLetter: "M", svgPath: RAW.manus },
+  manus:       { id: "manus",       brandColor: "#34322d", monochrome: true, fallbackLetter: "M", svgPath: RAW.manus },
   mimo:        { id: "mimo",        brandColor: "#ff6900", fallbackLetter: "M", svgPath: RAW.mimo },
   doubao:      { id: "doubao",      brandColor: "#2563eb", fallbackLetter: "D", svgPath: RAW.doubao },
   commandcode: { id: "commandcode", brandColor: "#44ff00", fallbackLetter: "C", svgPath: RAW.commandcode },
@@ -184,13 +185,13 @@ export const PROVIDER_ICON_REGISTRY: Record<string, ProviderIcon> = {
   crossmodel:  { id: "crossmodel",  brandColor: "#c084fc", fallbackLetter: "X", svgPath: RAW.crossmodel },
   qoder:       { id: "qoder",       brandColor: "#2563eb", fallbackLetter: "Q", svgPath: RAW.qoder },
   sakana:      { id: "sakana",      brandColor: "#0ea5e9", fallbackLetter: "S", svgPath: RAW.sakana },
-  stepfun:     { id: "stepfun",     brandColor: "#999999", fallbackLetter: "S", svgPath: RAW.stepfun },
-  venice:      { id: "venice",      brandColor: "#111827", fallbackLetter: "V", svgPath: RAW.venice },
+  stepfun:     { id: "stepfun",     brandColor: "#999999", monochrome: true, fallbackLetter: "S", svgPath: RAW.stepfun },
+  venice:      { id: "venice",      brandColor: "#111827", monochrome: true, fallbackLetter: "V", svgPath: RAW.venice },
   openaiapi:   { id: "openaiapi",   brandColor: "#10a37f", fallbackLetter: "O" },
   chutes:      { id: "chutes",      brandColor: "#ff5c35", fallbackLetter: "C" },
   litellm:     { id: "litellm",     brandColor: "#0ea5e9", fallbackLetter: "L" },
   poe:         { id: "poe",         brandColor: "#5d5fef", fallbackLetter: "P" },
-  devin:       { id: "devin",       brandColor: "#111827", fallbackLetter: "D" },
+  devin:       { id: "devin",       brandColor: "#111827", monochrome: true, fallbackLetter: "D" },
   zed:         { id: "zed",         brandColor: "#084ccf", fallbackLetter: "Z" },
 };
 
