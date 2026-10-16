@@ -1,4 +1,4 @@
-import { getProviderIcon } from "./providerIcons";
+import { getProviderIcon, providerIconTones } from "./providerIcons";
 
 interface Props {
   providerId: string;
@@ -19,14 +19,17 @@ export function ProviderIcon({
   title,
 }: Props) {
   const entry = getProviderIcon(providerId);
+  const tones = providerIconTones(entry);
   const dims = { width: size, height: size };
 
   // Set both the CSS var and `color` so fill="currentColor" glyphs stay brand-
   // tinted even when a parent theme only forwards --brand.
   const brandStyle = {
     ...dims,
-    color: entry.brandColor,
+    color: `var(--provider-tone, ${entry.brandColor})`,
     ["--provider-brand" as string]: entry.brandColor,
+    ["--provider-tone-light" as string]: tones.light,
+    ["--provider-tone-dark" as string]: tones.dark,
   };
 
   if (entry.svgPath) {
