@@ -73,43 +73,9 @@ export interface ProviderIcon {
   monochrome?: boolean;
 }
 
-export function providerIconTones(entry: ProviderIcon): { light: string; dark: string } {
-  if (entry.monochrome) {
-    return { light: "var(--text-primary)", dark: "var(--text-primary)" };
-  }
-
-  const channels = (hex: string): number[] =>
-    [1, 3, 5].map((offset) => parseInt(hex.slice(offset, offset + 2), 16));
-  const luminance = (rgb: number[]): number => {
-    const linear = rgb.map((channel) => {
-      const value = channel / 255;
-      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-    });
-    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
-  };
-  const original = channels(entry.brandColor);
-  const tone = (background: string, target: number): string => {
-    const backgroundLuminance = luminance(channels(background));
-    for (let step = 0; step <= 20; step += 1) {
-      const mixed = original.map((channel) =>
-        Math.round(channel + (target - channel) * (step / 20)),
-      );
-      const foregroundLuminance = luminance(mixed);
-      const contrast = (Math.max(foregroundLuminance, backgroundLuminance) + 0.05)
-        / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
-      if (contrast >= 3) {
-        return `#${mixed.map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
-      }
-    }
-    return target === 0 ? "#000000" : "#ffffff";
-  };
-
-  return { light: tone("#eaecf0", 0), dark: tone("#272b32", 255) };
-}
-
 const RAW: Record<string, string> = {
   abacus: tint(abacus),
-  alibaba: tint(alibaba),
+  alibaba: tint(alibaba).replace(/fill="#111111"/gi, 'fill="currentColor"'),
   amp: tint(amp),
   antigravity: tint(antigravity),
   augment: tint(augment),
@@ -161,8 +127,8 @@ const RAW: Record<string, string> = {
  * letters from `rust/src/native_ui/theme.rs::{provider_color, provider_icon}`.
  */
 export const PROVIDER_ICON_REGISTRY: Record<string, ProviderIcon> = {
-  alibaba:     { id: "alibaba",     brandColor: "#ff6a00", fallbackLetter: "阿", svgPath: RAW.alibaba },
-  alibabatokenplan: { id: "alibabatokenplan", brandColor: "#ff6a00", fallbackLetter: "阿", svgPath: RAW.alibaba },
+  alibaba:     { id: "alibaba",     brandColor: "#ff6a00", monochrome: true, fallbackLetter: "阿", svgPath: RAW.alibaba },
+  alibabatokenplan: { id: "alibabatokenplan", brandColor: "#ff6a00", monochrome: true, fallbackLetter: "阿", svgPath: RAW.alibaba },
   amp:         { id: "amp",         brandColor: "#dc2626", fallbackLetter: "⚡", svgPath: RAW.amp },
   antigravity: { id: "antigravity", brandColor: "#60ba7e", fallbackLetter: "◉", svgPath: RAW.antigravity },
   augment:     { id: "augment",     brandColor: "#6366f1", fallbackLetter: "A", svgPath: RAW.augment },
