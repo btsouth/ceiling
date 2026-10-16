@@ -1339,23 +1339,102 @@ body:has(.taskbar-flyout-frame) #root {
 }
 
 .taskbar-flyout-frame {
+  --tf-text: #f7f9fc;
+  --tf-text-muted: rgba(242, 247, 255, 0.68);
+  --tf-status: rgba(242, 247, 255, 0.56);
+  --tf-name: rgba(255, 255, 255, 0.94);
+  --tf-unavailable: rgba(255, 255, 255, 0.7);
+  --tf-account: rgba(255, 255, 255, 0.6);
+  --tf-value: rgba(255, 255, 255, 0.96);
+  --tf-amount: rgba(255, 255, 255, 0.92);
+  --tf-reset: rgba(242, 247, 255, 0.52);
+  --tf-window-more: rgba(242, 247, 255, 0.5);
+  --tf-empty: rgba(242, 247, 255, 0.66);
+  --tf-more: rgba(242, 247, 255, 0.58);
+  --tf-unavailable-label: rgba(242, 247, 255, 0.78);
+  --tf-unavailable-value: var(--usage-bar-high, #e3b341);
+  --tf-bg: color-mix(in srgb, var(--taskbar-surface) 12%, #1e2229);
+  --tf-gradient: linear-gradient(145deg, rgba(255, 255, 255, 0.065), rgba(0, 0, 0, 0.09));
+  --tf-highlight: rgba(255, 255, 255, 0.075);
+  --tf-border: rgba(255, 255, 255, 0.11);
+  --tf-divider: rgba(255, 255, 255, 0.075);
+  --tf-mark-shadow: rgba(0, 16, 38, 0.2);
+  --tf-icon-bg: rgba(255, 255, 255, 0.055);
+  --tf-icon-border: rgba(255, 255, 255, 0.09);
+  --tf-brand-fallback: #6ea8fe;
+  --tf-strip-text-weight: 78%;
+  --tf-strip-text-mix: white;
+  --tf-strip-row-weight: 10%;
+  --tf-credit-border: rgba(128, 221, 255, 0.28);
+  --tf-credit-bg: rgba(91, 201, 238, 0.12);
+  --tf-credit-text: rgba(224, 247, 255, 0.94);
+  --tf-credit-empty-border: rgba(224, 247, 255, 0.18);
+  --tf-credit-empty-text: rgba(224, 247, 255, 0.6);
+  --tf-track: rgba(220, 237, 255, 0.17);
+  --tf-fill: #78d8e4;
+  --tf-fill-warning: #f2bd5c;
+  --tf-fill-critical: #ff7f76;
+  --tf-value-warning: #ffd88c;
+  --tf-value-critical: #ffaaa4;
+  --tf-open-text: rgba(255, 255, 255, 0.9);
+  --tf-open-bg: rgba(255, 255, 255, 0.025);
+  --tf-open-hover: rgba(255, 255, 255, 0.085);
   box-sizing: border-box;
   width: 100%;
   min-height: 100vh;
   padding: 0;
-  color: #f7f9fc;
+  color: var(--tf-text);
   font-family: "Segoe UI Variable Text", "Segoe UI", sans-serif;
+}
+
+[data-theme="light"] .taskbar-flyout-frame {
+  --tf-text: #1b1f24;
+  --tf-text-muted: rgba(27, 31, 36, 0.66);
+  --tf-status: rgba(27, 31, 36, 0.66);
+  --tf-name: #1b1f24;
+  --tf-unavailable: rgba(27, 31, 36, 0.66);
+  --tf-account: rgba(27, 31, 36, 0.66);
+  --tf-value: #1b1f24;
+  --tf-amount: #1b1f24;
+  --tf-reset: rgba(27, 31, 36, 0.66);
+  --tf-window-more: rgba(27, 31, 36, 0.66);
+  --tf-empty: rgba(27, 31, 36, 0.66);
+  --tf-more: rgba(27, 31, 36, 0.66);
+  --tf-unavailable-label: rgba(27, 31, 36, 0.66);
+  --tf-unavailable-value: #8a5a00;
+  --tf-bg: color-mix(in srgb, var(--taskbar-surface) 10%, #f3f5f8);
+  --tf-gradient: linear-gradient(145deg, rgba(255, 255, 255, 0.65), rgba(255, 255, 255, 0.15));
+  --tf-highlight: rgba(255, 255, 255, 0.75);
+  --tf-border: rgba(0, 0, 0, 0.1);
+  --tf-divider: rgba(0, 0, 0, 0.08);
+  --tf-icon-bg: rgba(0, 0, 0, 0.04);
+  --tf-icon-border: rgba(0, 0, 0, 0.08);
+  --tf-strip-text-weight: 70%;
+  --tf-strip-text-mix: black;
+  --tf-strip-max-lightness: 0.42;
+  --tf-strip-row-weight: 5%;
+  --tf-credit-border: rgba(0, 120, 170, 0.3);
+  --tf-credit-bg: rgba(0, 140, 190, 0.1);
+  --tf-credit-text: #0b5f80;
+  --tf-credit-empty-border: rgba(0, 120, 170, 0.2);
+  --tf-credit-empty-text: #0b5f80;
+  --tf-track: rgba(20, 40, 70, 0.14);
+  --tf-fill: #1a9bab;
+  --tf-fill-warning: #c98a12;
+  --tf-fill-critical: #d6463c;
+  --tf-value-warning: #8a5a00;
+  --tf-value-critical: #b42318;
+  --tf-open-text: #1b1f24;
+  --tf-open-bg: rgba(0, 0, 0, 0.015);
+  --tf-open-hover: rgba(0, 0, 0, 0.055);
 }
 
 .taskbar-flyout {
   overflow: hidden;
   border: 0;
   border-radius: 0;
-  background:
-    linear-gradient(145deg, rgba(255, 255, 255, 0.065), rgba(0, 0, 0, 0.09)),
-    /* Keep white labels legible when Windows reports a light taskbar color. */
-    color-mix(in srgb, var(--taskbar-surface) 12%, #1e2229);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.075);
+  background: var(--tf-gradient), var(--tf-bg);
+  box-shadow: inset 0 1px 0 var(--tf-highlight);
   backdrop-filter: blur(24px) saturate(125%);
   -webkit-backdrop-filter: blur(24px) saturate(125%);
 }
@@ -1388,13 +1467,13 @@ body:has(.taskbar-flyout-frame) #root {
   gap: 11px;
   min-height: 51px;
   padding: 10px 14px 9px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.11);
+  border-bottom: 1px solid var(--tf-border);
 }
 
 .taskbar-flyout__mark {
   flex: 0 0 auto;
   border-radius: 8px;
-  filter: drop-shadow(0 3px 7px rgba(0, 16, 38, 0.2));
+  filter: drop-shadow(0 3px 7px var(--tf-mark-shadow));
 }
 
 .taskbar-flyout__title {
@@ -1406,7 +1485,7 @@ body:has(.taskbar-flyout-frame) #root {
 
 .taskbar-flyout__subtitle {
   margin-top: 1px;
-  color: rgba(242, 247, 255, 0.68);
+  color: var(--tf-text-muted);
   font-size: 12px;
   line-height: 16px;
 }
@@ -1425,15 +1504,15 @@ body:has(.taskbar-flyout-frame) #root {
 }
 
 .taskbar-flyout__provider + .taskbar-flyout__provider {
-  border-top: 1px solid rgba(255, 255, 255, 0.075);
+  border-top: 1px solid var(--tf-divider);
 }
 
 .taskbar-flyout__provider-icon {
   margin-top: 1px;
   border-radius: 8px;
   color: var(--provider-brand);
-  background: rgba(255, 255, 255, 0.055);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.09);
+  background: var(--tf-icon-bg);
+  box-shadow: inset 0 0 0 1px var(--tf-icon-border);
 }
 
 .taskbar-flyout__provider-content {
@@ -1453,7 +1532,7 @@ body:has(.taskbar-flyout-frame) #root {
 
 .taskbar-flyout__provider-name {
   overflow: hidden;
-  color: rgba(255, 255, 255, 0.94);
+  color: var(--tf-name);
   font-size: 13px;
   font-weight: 600;
   line-height: 18px;
@@ -1470,9 +1549,9 @@ body:has(.taskbar-flyout-frame) #root {
   font-weight: 600;
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  color: color-mix(in srgb, var(--provider-brand, #6ea8fe) 78%, white);
-  background: color-mix(in srgb, var(--provider-brand, #6ea8fe) 16%, transparent);
-  border: 1px solid color-mix(in srgb, var(--provider-brand, #6ea8fe) 30%, transparent);
+  color: color-mix(in srgb, var(--provider-brand, var(--tf-brand-fallback)) var(--tf-strip-text-weight), var(--tf-strip-text-mix));
+  background: color-mix(in srgb, var(--provider-brand, var(--tf-brand-fallback)) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--provider-brand, var(--tf-brand-fallback)) 30%, transparent);
   border-radius: 999px;
   padding: 0 5px;
   line-height: 1.35;
@@ -1481,13 +1560,17 @@ body:has(.taskbar-flyout-frame) #root {
 /* Tint only — do not override margin/padding or the strip seat drifts
    left of every other provider row (content inset must stay 14px). */
 .taskbar-flyout__provider--on-strip {
-  background: color-mix(in srgb, var(--provider-brand, #6ea8fe) 10%, transparent);
+  background: color-mix(in srgb, var(--provider-brand, var(--tf-brand-fallback)) var(--tf-strip-row-weight), transparent);
   box-shadow: inset 0 0 0 1px
-    color-mix(in srgb, var(--provider-brand, #6ea8fe) 22%, transparent);
+    color-mix(in srgb, var(--provider-brand, var(--tf-brand-fallback)) 22%, transparent);
+}
+
+[data-theme="light"] .taskbar-flyout__on-strip {
+  color: oklch(from color-mix(in srgb, var(--provider-brand, var(--tf-brand-fallback)) var(--tf-strip-text-weight), var(--tf-strip-text-mix)) min(l, var(--tf-strip-max-lightness)) c h);
 }
 
 .taskbar-flyout__provider-unavailable {
-  color: rgba(255, 255, 255, 0.7);
+  color: var(--tf-unavailable);
   font-size: 11px;
   font-weight: 600;
 }
@@ -1497,10 +1580,10 @@ body:has(.taskbar-flyout-frame) #root {
 .taskbar-flyout__reset-credit {
   flex-shrink: 0;
   padding: 1px 6px;
-  border: 1px solid rgba(128, 221, 255, 0.28);
+  border: 1px solid var(--tf-credit-border);
   border-radius: 999px;
-  background: rgba(91, 201, 238, 0.12);
-  color: rgba(224, 247, 255, 0.94);
+  background: var(--tf-credit-bg);
+  color: var(--tf-credit-text);
   font-size: 10px;
   font-weight: 600;
   line-height: 14px;
@@ -1508,15 +1591,15 @@ body:has(.taskbar-flyout-frame) #root {
 
 /* No banked resets: keep the indicator visible but quiet — nothing to act on. */
 .taskbar-flyout__reset-credit--empty {
-  border-color: rgba(224, 247, 255, 0.18);
+  border-color: var(--tf-credit-empty-border);
   background: transparent;
-  color: rgba(224, 247, 255, 0.6);
+  color: var(--tf-credit-empty-text);
 }
 
 .taskbar-flyout__provider-status {
   margin-top: 4px;
   overflow: hidden;
-  color: rgba(242, 247, 255, 0.56);
+  color: var(--tf-status);
   font-size: 10.5px;
   line-height: 14px;
   text-overflow: ellipsis;
@@ -1552,7 +1635,7 @@ body:has(.taskbar-flyout-frame) #root {
 
 .taskbar-flyout__meter-label {
   overflow: hidden;
-  color: rgba(242, 247, 255, 0.68);
+  color: var(--tf-text-muted);
   font-size: 10.5px;
   line-height: 13px;
   text-overflow: ellipsis;
@@ -1560,7 +1643,7 @@ body:has(.taskbar-flyout-frame) #root {
 }
 
 .taskbar-flyout__meter-value {
-  color: rgba(255, 255, 255, 0.96);
+  color: var(--tf-value);
   font-size: 11.5px;
   font-weight: 650;
   line-height: 13px;
@@ -1570,7 +1653,7 @@ body:has(.taskbar-flyout-frame) #root {
    money is adjacent to the fraction it explains. */
 .taskbar-flyout__meter-amount {
   margin-bottom: 3px;
-  color: rgba(255, 255, 255, 0.92);
+  color: var(--tf-amount);
   font-size: 10.5px;
   font-weight: 600;
   line-height: 13px;
@@ -1585,35 +1668,35 @@ body:has(.taskbar-flyout-frame) #root {
   height: 4px;
   overflow: hidden;
   border-radius: 999px;
-  background: rgba(220, 237, 255, 0.17);
+  background: var(--tf-track);
 }
 
 .taskbar-flyout__track > span {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: #78d8e4;
+  background: var(--tf-fill);
 }
 
 .taskbar-flyout__track[data-level="warning"] > span {
-  background: #f2bd5c;
+  background: var(--tf-fill-warning);
 }
 
 .taskbar-flyout__track[data-level="critical"] > span {
-  background: #ff7f76;
+  background: var(--tf-fill-critical);
 }
 
 .taskbar-flyout__meter-value[data-level="warning"] {
-  color: #ffd88c;
+  color: var(--tf-value-warning);
 }
 
 .taskbar-flyout__meter-value[data-level="critical"] {
-  color: #ffaaa4;
+  color: var(--tf-value-critical);
 }
 
 .taskbar-flyout__reset {
   flex: 0 0 auto;
-  color: rgba(242, 247, 255, 0.52);
+  color: var(--tf-reset);
   font-size: 10px;
   line-height: 13px;
   font-variant-numeric: tabular-nums;
@@ -1627,34 +1710,34 @@ body:has(.taskbar-flyout-frame) #root {
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
-  color: rgba(242, 247, 255, 0.56);
+  color: var(--tf-status);
   font-size: 10.5px;
   line-height: 14px;
 }
 .taskbar-flyout__inactive--unavailable {
-  color: var(--usage-bar-high, #e3b341);
+  color: var(--tf-unavailable-value);
 }
 .taskbar-flyout__inactive--unavailable .taskbar-flyout__meter-label {
-  color: rgba(242, 247, 255, 0.78);
+  color: var(--tf-unavailable-label);
 }
 
 .taskbar-flyout__window-more {
-  color: rgba(242, 247, 255, 0.5);
+  color: var(--tf-window-more);
   font-size: 9.5px;
   line-height: 12px;
 }
 
 .taskbar-flyout__empty {
   padding: 25px 16px;
-  color: rgba(242, 247, 255, 0.66);
+  color: var(--tf-empty);
   font-size: 12px;
   text-align: center;
 }
 
 .taskbar-flyout__more {
   padding: 7px 14px 9px 56px;
-  border-top: 1px solid rgba(255, 255, 255, 0.075);
-  color: rgba(242, 247, 255, 0.58);
+  border-top: 1px solid var(--tf-divider);
+  color: var(--tf-more);
   font-size: 10.5px;
 }
 
@@ -1666,9 +1749,9 @@ body:has(.taskbar-flyout-frame) #root {
   min-height: 42px;
   padding: 0 14px;
   border: 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.11);
-  color: rgba(255, 255, 255, 0.9);
-  background: rgba(255, 255, 255, 0.025);
+  border-top: 1px solid var(--tf-border);
+  color: var(--tf-open-text);
+  background: var(--tf-open-bg);
   font: inherit;
   font-size: 12.5px;
   text-align: left;
@@ -1677,7 +1760,7 @@ body:has(.taskbar-flyout-frame) #root {
 
 .taskbar-flyout__open:hover,
 .taskbar-flyout__open:focus-visible {
-  background: rgba(255, 255, 255, 0.085);
+  background: var(--tf-open-hover);
   outline: none;
 }
 
@@ -10191,7 +10274,7 @@ body:has(.dashboard-shell) #root {
 .taskbar-flyout__provider-account {
   margin-top: 1px;
   overflow: hidden;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--tf-account);
   font-size: 11px;
   font-weight: 500;
   line-height: 15px;
