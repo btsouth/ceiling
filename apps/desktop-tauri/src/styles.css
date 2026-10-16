@@ -2839,6 +2839,10 @@ body:has(.taskbar-flyout-frame) #root {
   display: block;
 }
 
+[data-theme="light"] .provider-icon[data-provider="grok"] svg {
+  color: var(--text-primary);
+}
+
 .provider-icon--letter {
   font-weight: 700;
   font-size: 0.78rem;
