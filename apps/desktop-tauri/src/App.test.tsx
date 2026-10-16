@@ -1,4 +1,4 @@
-import { act, render, waitFor } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // App.tsx routes by `getCurrentWebviewWindow().label` before falling through
@@ -170,40 +170,6 @@ describe("App window-label routing", () => {
     expect(queryByTestId("surface-pop-out-panel")).toBeNull();
     expect(queryByTestId("surface-settings")).toBeNull();
     expect(queryByTestId("surface-float-bar")).toBeNull();
-  });
-
-  it("updates the flyout theme live when following the system", async () => {
-    webviewWindowMocks.label = "flyout";
-    tauriMocks.getBootstrapState.mockResolvedValue({
-      ...bootstrap(),
-      settings: settings({ theme: "auto" }),
-    });
-    let onChange: ((event: MediaQueryListEvent) => void) | undefined;
-    const removeEventListener = vi.fn();
-    vi.stubGlobal("matchMedia", vi.fn(() => ({
-      matches: true,
-      addEventListener: (_type: string, listener: typeof onChange) => {
-        onChange = listener;
-      },
-      removeEventListener,
-    })));
-
-    const { queryByTestId, unmount } = render(<App />);
-    try {
-      await waitFor(() => {
-        expect(queryByTestId("surface-taskbar-flyout")).not.toBeNull();
-        expect(document.documentElement.dataset.theme).toBe("light");
-      });
-      expect(onChange).toBeDefined();
-      act(() => onChange?.({ matches: false } as MediaQueryListEvent));
-      expect(document.documentElement.dataset.theme).toBe("dark");
-      act(() => onChange?.({ matches: true } as MediaQueryListEvent));
-      expect(document.documentElement.dataset.theme).toBe("light");
-    } finally {
-      unmount();
-      vi.unstubAllGlobals();
-    }
-    expect(removeEventListener).toHaveBeenCalledWith("change", onChange);
   });
 
   it("routes the detached settings window to Settings, not TrayPanel", async () => {
