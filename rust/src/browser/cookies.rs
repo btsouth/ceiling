@@ -488,9 +488,10 @@ impl CookieExtractor {
             let cipher = Aes256Gcm::new_from_slice(key)
                 .map_err(|e| CookieError::Decryption(format!("cipher init: {}", e)))?;
 
-            let nonce_obj = Nonce::from_slice(nonce);
+            let nonce_obj = Nonce::try_from(nonce)
+                .map_err(|e| CookieError::Decryption(format!("nonce: {}", e)))?;
 
-            let plaintext = cipher.decrypt(nonce_obj, ciphertext).map_err(|e| {
+            let plaintext = cipher.decrypt(&nonce_obj, ciphertext).map_err(|e| {
                 tracing::debug!("AES-GCM decrypt failed: {}", e);
                 CookieError::Decryption(format!("decrypt: {}", e))
             })?;
