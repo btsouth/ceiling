@@ -558,7 +558,11 @@ async fn sha256_file_async(file_path: &Path) -> Result<String, String> {
 
     let mut hasher = Sha256::new();
     hasher.update(&file_bytes);
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 fn sha256_file(file_path: &Path) -> Result<String, String> {
@@ -569,7 +573,11 @@ fn sha256_file(file_path: &Path) -> Result<String, String> {
 
     let mut hasher = Sha256::new();
     hasher.update(&file_bytes);
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 /// Start background download of an update

@@ -161,7 +161,10 @@ fn publisher_subject_fingerprint(trust_data: &WINTRUST_DATA) -> Result<String, S
         }
 
         let subject_der = std::slice::from_raw_parts(subject.pbData, subject.cbData as usize);
-        Ok(format!("{:x}", Sha256::digest(subject_der)))
+        Ok(Sha256::digest(subject_der)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect())
     }
 }
 
