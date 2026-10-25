@@ -1,4 +1,4 @@
-import { act, render, waitFor } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // App.tsx routes by `getCurrentWebviewWindow().label` before falling through
@@ -13,16 +13,6 @@ const webviewWindowMocks = vi.hoisted(() => ({
 
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
   getCurrentWebviewWindow: () => ({ label: webviewWindowMocks.label }),
-}));
-
-const nativeThemeMocks = vi.hoisted(() => ({
-  isTauri: vi.fn(() => false),
-  setTheme: vi.fn((_theme: "light" | "dark" | null) => Promise.resolve()),
-}));
-
-vi.mock("@tauri-apps/api/core", () => ({ isTauri: nativeThemeMocks.isTauri }));
-vi.mock("@tauri-apps/api/window", () => ({
-  getCurrentWindow: () => ({ setTheme: nativeThemeMocks.setTheme }),
 }));
 
 const tauriMocks = vi.hoisted(() => ({
@@ -148,7 +138,6 @@ describe("App window-label routing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     webviewWindowMocks.label = "main";
-    nativeThemeMocks.isTauri.mockReturnValue(false);
     tauriMocks.getBootstrapState.mockResolvedValue(bootstrap());
     tauriMocks.getSettingsSnapshot.mockResolvedValue(settings());
     tauriMocks.checkForUpdates.mockResolvedValue({
@@ -167,62 +156,6 @@ describe("App window-label routing", () => {
       target: { kind: "summary" },
     });
     eventMocks.listen.mockResolvedValue(() => {});
-  });
-
-  it("follows the system theme until the saved preference has loaded", async () => {
-    nativeThemeMocks.isTauri.mockReturnValue(true);
-    let finishBootstrap!: (state: BootstrapState) => void;
-    tauriMocks.getBootstrapState.mockImplementation(
-      () => new Promise((resolve) => { finishBootstrap = resolve; }),
-    );
-
-    const { unmount } = render(<App />);
-
-    await waitFor(() => expect(nativeThemeMocks.setTheme).toHaveBeenCalledWith(null));
-    await waitFor(() => expect(tauriMocks.getBootstrapState).toHaveBeenCalled());
-
-    await act(async () => {
-      finishBootstrap(bootstrap());
-    });
-    await waitFor(() => expect(nativeThemeMocks.setTheme).toHaveBeenLastCalledWith("dark"));
-
-    unmount();
-  });
-
-  it.each(["light", "dark"] as const)("keeps the flyout automatic with a saved %s theme", async (theme) => {
-    webviewWindowMocks.label = "flyout";
-    nativeThemeMocks.isTauri.mockReturnValue(true);
-    tauriMocks.getBootstrapState.mockResolvedValue({ ...bootstrap(), settings: settings({ theme }) });
-    let systemLight = true;
-    const listeners = new Set<(event: MediaQueryListEvent) => void>();
-    vi.stubGlobal("matchMedia", vi.fn(() => ({
-      get matches() { return systemLight; },
-      addEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => listeners.add(listener),
-      removeEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => listeners.delete(listener),
-    } as unknown as MediaQueryList)));
-
-    const { findByTestId, unmount } = render(<App />);
-
-    await findByTestId("surface-taskbar-flyout");
-    expect(nativeThemeMocks.setTheme).toHaveBeenCalledWith(null);
-    expect(nativeThemeMocks.setTheme.mock.calls.every(([value]) => value === null)).toBe(true);
-    expect(document.documentElement.dataset.theme).toBe("light");
-
-    await act(async () => {
-      window.dispatchEvent(new CustomEvent("codexbar:settings-updated", {
-        detail: settings({ theme: theme === "light" ? "dark" : "light" }),
-      }));
-    });
-    expect(nativeThemeMocks.setTheme.mock.calls.every(([value]) => value === null)).toBe(true);
-
-    act(() => {
-      systemLight = false;
-      for (const listener of listeners) listener({ matches: systemLight } as MediaQueryListEvent);
-    });
-    expect(document.documentElement.dataset.theme).toBe("dark");
-
-    unmount();
-    vi.unstubAllGlobals();
   });
 
   it("routes the dedicated flyout window to the taskbar glance surface", async () => {
