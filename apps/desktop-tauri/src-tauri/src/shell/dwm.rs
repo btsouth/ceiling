@@ -232,26 +232,7 @@ fn force_dark_caption_inner(win: &tauri::WebviewWindow, keep_resize: bool) {
     let hwnd = if hwnd != 0 { hwnd } else { inner };
     tracing::info!("dwm: inner={inner:#x} root={hwnd:#x}");
 
-    const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
-    const DWMWA_CAPTION_COLOR: u32 = 35;
-    let dark_mode: u32 = 1;
-    let caption_color: u32 = 0x001C1C1E;
-
     unsafe {
-        let r1 = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            &raw const dark_mode as *const c_void,
-            4,
-        );
-        let r2 = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_CAPTION_COLOR,
-            &raw const caption_color as *const c_void,
-            4,
-        );
-        tracing::info!("dwm: dark_mode={r1:#x} caption_color={r2:#x}");
-
         // Windows 11 rounded corners for our borderless windows (so the top
         // doesn't read as a hard, cut-off rectangle).
         const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;

@@ -60,9 +60,9 @@ function AppInner() {
   const surface = useSurfaceSnapshot();
   const [state, setState] = useState<BootstrapState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [themePreference, setThemePreference] = useState<ThemePreference>("dark");
+  const [themePreference, setThemePreference] = useState<ThemePreference>("auto");
 
-  useTheme(themePreference);
+  useTheme(isFlyoutWindow() ? "auto" : themePreference);
 
   const reloadBootstrapState = useCallback(
     () => getBootstrapState(),

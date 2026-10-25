@@ -1,6 +1,10 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import type { BootstrapState, ProviderUsageSnapshot } from "../types/bridge";
+import type {
+  BootstrapState,
+  ProviderUsageSnapshot,
+  ThemePreference,
+} from "../types/bridge";
 import { openSettingsWindow, quitApp as quitApplication } from "../lib/tauri";
 import {
   hasMultipleAccounts,
@@ -27,6 +31,7 @@ import UpdateBanner from "../components/UpdateBanner";
 import DetectedAccountsCard from "../components/DetectedAccountsCard";
 import { orderProviderSnapshots } from "../lib/providerOrder";
 import { formatRelativeUpdated } from "../lib/relativeTime";
+import { Dropdown } from "../components/Dropdown";
 
 type DashboardSection = "overview" | "activity" | "accounts" | "charts";
 
@@ -83,22 +88,6 @@ function IconGear() {
     </svg>
   );
 }
-function IconSun() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden {...RAIL_ICON}>
-      <circle cx="12" cy="12" r="4" />
-      <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
-    </svg>
-  );
-}
-function IconMoon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden {...RAIL_ICON}>
-      <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" />
-    </svg>
-  );
-}
-
 /**
  * Pop-out window — a windowed dashboard: left nav rail, an Overview of
  * plan-status glance cards (selecting a provider expands its full MenuCard),
@@ -243,11 +232,6 @@ export default function PopOutPanel({
   useEffect(() => {
     if (dashboardBodyRef.current) dashboardBodyRef.current.scrollTop = 0;
   }, [activeSection, selectedProviderId]);
-
-  const isLight = settings.theme === "light";
-  const toggleTheme = useCallback(() => {
-    void update({ theme: isLight ? "dark" : "light" });
-  }, [isLight, update]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -457,15 +441,21 @@ export default function PopOutPanel({
           </div>
 
           <footer className="dashboard-status">
-            <button
-              type="button"
-              className="dashboard-status__toggle"
-              onClick={toggleTheme}
-              title="Toggle light / dark"
-            >
-              {isLight ? <IconSun /> : <IconMoon />}
-              {isLight ? "Light" : "Dark"}
-            </button>
+            <div className="dashboard-status__theme" title={t("ThemeHelper")}>
+              <Dropdown
+                value={settings.theme}
+                options={[
+                  { value: "auto", label: t("ThemeAutoOption") },
+                  { value: "light", label: t("ThemeLightOption") },
+                  { value: "dark", label: t("ThemeDarkOption") },
+                ]}
+                ariaLabel={t("ThemeLabel")}
+                buttonClassName="dashboard-status__toggle"
+                onChange={(value) => {
+                  void update({ theme: value as ThemePreference });
+                }}
+              />
+            </div>
             <span className="dashboard-status__center">
               <span
                 className={`dashboard-status__dot${isRefreshing ? " dashboard-status__dot--busy" : ""}`}

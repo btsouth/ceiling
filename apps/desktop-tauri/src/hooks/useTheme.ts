@@ -1,5 +1,7 @@
 import { useEffect } from "react";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { isTauri } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ThemePreference } from "../types/bridge";
 
 export type ResolvedTheme = "light" | "dark";
@@ -34,6 +36,11 @@ function apply(theme: ResolvedTheme) {
  */
 export function useTheme(preference: ThemePreference): void {
   useEffect(() => {
+    if (isTauri()) {
+      const nativeTheme = preference === "auto" ? null : preference;
+      void getCurrentWindow().setTheme(nativeTheme).catch(() => {});
+    }
+
     apply(resolveTheme(preference));
 
     if (preference !== "auto" || typeof window === "undefined") {

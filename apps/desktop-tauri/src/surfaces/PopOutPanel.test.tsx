@@ -255,6 +255,10 @@ describe("PopOutPanel", () => {
         PanelShowFewerProviders: "Show fewer providers",
         PanelUsedSuffix: "used",
         SummaryProvidersLabel: "providers",
+        ThemeLabel: "Theme",
+        ThemeAutoOption: "Auto (system)",
+        ThemeLightOption: "Light",
+        ThemeDarkOption: "Dark",
       }),
     );
     tauriMocks.openFlyoutWindow.mockResolvedValue(undefined);
@@ -356,9 +360,68 @@ describe("PopOutPanel", () => {
 
     // Default theme is dark, so the toggle switches to light.
     fireEvent.click(container.querySelector<HTMLButtonElement>(".dashboard-status__toggle")!);
+    fireEvent.click(screen.getByRole("option", { name: "Light" }));
 
     await waitFor(() =>
       expect(tauriMocks.updateSettings).toHaveBeenCalledWith({ theme: "light" }),
+    );
+  });
+
+  it("shows Auto as the selected theme and persists an explicit Auto choice", async () => {
+    const { container } = renderPopOut([provider("codex", "Codex", 80)], undefined, [], {
+      theme: "auto",
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector(".dashboard-status")).not.toBeNull();
+    });
+    const themeButton = container.querySelector<HTMLButtonElement>(
+      ".dashboard-status__toggle",
+    )!;
+    expect(themeButton).toHaveTextContent("Auto (system)");
+
+    fireEvent.click(themeButton);
+    const autoOption = screen.getByRole("option", { name: "Auto (system)" });
+    expect(autoOption).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(autoOption);
+
+    await waitFor(() =>
+      expect(tauriMocks.updateSettings).toHaveBeenCalledWith({ theme: "auto" }),
+    );
+  });
+
+  it.each([
+    { label: "Light", theme: "light" },
+    { label: "Dark", theme: "dark" },
+  ])("selects $label directly from the dashboard theme menu", async ({ label, theme }) => {
+    renderPopOut([provider("codex", "Codex", 80)], undefined, [], {
+      theme: "auto",
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Theme" }));
+    fireEvent.click(screen.getByRole("option", { name: label }));
+
+    await waitFor(() =>
+      expect(tauriMocks.updateSettings).toHaveBeenCalledWith({ theme }),
+    );
+  });
+
+  it("updates the displayed theme when another window changes the setting", async () => {
+    renderPopOut([provider("codex", "Codex", 80)]);
+
+    await waitFor(() => {
+      expect(eventListeners.has("settings-changed")).toBe(true);
+    });
+    tauriMocks.getSettingsSnapshot.mockResolvedValue({
+      ...settings(),
+      theme: "light",
+    });
+    await act(async () => {
+      eventListeners.get("settings-changed")?.({});
+    });
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Theme" })).toHaveTextContent("Light"),
     );
   });
 
