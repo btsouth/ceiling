@@ -6,6 +6,7 @@
     "flyout-commands",
     "core:event:allow-listen",
     "core:event:allow-unlisten",
+    "core:window:allow-set-theme",
     "core:window:allow-set-size"
   ]
 }

@@ -44,7 +44,6 @@ pub fn open_or_focus(app: &tauri::AppHandle, tab: &str) -> Result<(), String> {
         .inner_size(width, height)
         .decorations(false)
         .shadow(false)
-        .theme(Some(tauri::Theme::Dark))
         .resizable(true)
         .visible(false);
     // The page can signal readiness while build() is still returning. Keep

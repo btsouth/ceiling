@@ -9572,6 +9572,25 @@ body:has(.dashboard-shell) #root {
   width: 14px;
   height: 14px;
 }
+.dashboard-status__theme .dropdown__button {
+  width: auto;
+  height: auto;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  line-height: normal;
+}
+.dashboard-status__theme .dropdown__button:hover {
+  color: var(--text-primary);
+}
+.dashboard-status__theme .dropdown__list {
+  top: auto;
+  bottom: calc(100% + 4px);
+  min-width: max-content;
+}
 
 /* ── Light mode final polish ──────────────────────────────────────────
    Keep component CSS semantic: colored fills may stay expressive, while

@@ -60,9 +60,9 @@ function AppInner() {
   const surface = useSurfaceSnapshot();
   const [state, setState] = useState<BootstrapState | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [themePreference, setThemePreference] = useState<ThemePreference>("dark");
+  const [themePreference, setThemePreference] = useState<ThemePreference>("auto");
 
-  useTheme(themePreference);
+  useTheme(isFlyoutWindow() ? "auto" : themePreference);
 
   const reloadBootstrapState = useCallback(
     () => getBootstrapState(),
@@ -127,10 +127,23 @@ function AppInner() {
       }
     };
     window.addEventListener("codexbar:settings-updated", onSettingsUpdated);
+    // The local event above only covers this window. The backend broadcasts
+    // `settings-changed` to every window, so a theme picked in the dashboard
+    // also reaches Settings, the flyout and the float bar.
+    const unlistenSettingsChangedPromise = listen("settings-changed", () => {
+      getSettingsSnapshot()
+        .then((fresh) => {
+          if (!cancelled) setThemePreference(fresh.theme);
+        })
+        .catch(() => {});
+    });
 
     return () => {
       cancelled = true;
       void unlistenSettingsChangePromise
+        .then((unlisten) => unlisten?.())
+        .catch(() => {});
+      void unlistenSettingsChangedPromise
         .then((unlisten) => unlisten?.())
         .catch(() => {});
       if (updateTimer !== null) window.clearTimeout(updateTimer);
