@@ -10,6 +10,7 @@ use super::{NamedRateWindow, ProviderId, RateWindow};
 
 const CURSOR_API_ID: &str = "cursor-api";
 const CURSOR_ON_DEMAND_ID: &str = "cursor-on-demand";
+const CLAUDE_SPEND_LIMIT_ID: &str = "claude-spend-limit";
 
 /// Window that actually constrains this provider — the same pick the desktop
 /// strip uses for its one number.
@@ -23,7 +24,15 @@ pub fn constraining_rate_window<'a>(
     if provider == ProviderId::Cursor {
         return cursor_strip_window(primary, secondary, extras);
     }
-    generic_constraining_window(primary, secondary, tertiary)
+    let generic = generic_constraining_window(primary, secondary, tertiary);
+    if provider == ProviderId::Claude && generic.is_none() {
+        // Enterprise seats report only a monthly spend limit (#513).
+        return extras
+            .iter()
+            .find(|extra| extra.id == CLAUDE_SPEND_LIMIT_ID)
+            .map(|extra| &extra.window);
+    }
+    generic
 }
 
 fn generic_constraining_window<'a>(
@@ -318,6 +327,20 @@ mod tests {
         assert_eq!(
             remaining(ProviderId::Claude, Some(10.0), Some(20.0), None, &extras),
             Some(80.0)
+        );
+    }
+
+    /// #513: an Enterprise seat has no core window, only its spend limit.
+    #[test]
+    fn claude_falls_back_to_the_spend_limit_without_core_windows() {
+        let extras = [extra(CLAUDE_SPEND_LIMIT_ID, 25.0)];
+        assert_eq!(
+            remaining(ProviderId::Claude, None, None, None, &extras),
+            Some(75.0)
+        );
+        assert_eq!(
+            remaining(ProviderId::Claude, Some(10.0), None, None, &extras),
+            Some(90.0)
         );
     }
 }

@@ -403,7 +403,10 @@ impl ClaudeOAuthFetcher {
         response: &OAuthUsageResponse,
         credentials: &ClaudeOAuthCredentials,
     ) -> UsageSnapshot {
-        let mut usage = response.build_snapshot(Self::to_rate_window);
+        let mut usage = super::usage_api::with_spend_limit_lane(
+            response.build_snapshot(Self::to_rate_window),
+            response.extra_usage.as_ref(),
+        );
 
         // Plan name from the rate limit tier, falling back to the subscription
         // type when the tier is shared across plans (Pro and Free both report

@@ -473,7 +473,9 @@ fn constraining_readout(
     };
 
     for candidate in candidates {
-        if outranks_window(candidate.window, best.window) {
+        // A placeholder primary is not a reading, so any real lane beats it,
+        // even a quiet 0% one (#513: an Enterprise seat at $0 of its spend limit).
+        if best.named_state.is_some() || outranks_window(candidate.window, best.window) {
             best = candidate;
         }
     }
@@ -4018,6 +4020,33 @@ mod tests {
         assert_eq!(with_weekly.label, Some("Weekly"));
         assert!(with_weekly.named_state.is_none());
         assert_eq!(strip_readout_percent(&with_weekly, true), Some(23));
+    }
+
+    /// #513: an Enterprise seat reports only its monthly spend limit. The
+    /// tile shows that lane, even at $0, rather than the Session placeholder.
+    #[test]
+    fn claude_strip_shows_the_spend_limit_when_it_is_the_only_lane() {
+        let mut snapshot = snap("claude", None, 0.0);
+        snapshot.primary_label = Some("Session (5h)".into());
+        snapshot
+            .inactive_rate_windows
+            .push(crate::commands::InactiveRateWindowSnapshot {
+                id: "claude-session".into(),
+                title: "Session (5h)".into(),
+                description: "No usage reported".into(),
+                state: "unavailable".into(),
+            });
+        snapshot.extra_rate_windows = vec![crate::commands::NamedRateWindowSnapshot {
+            id: "claude-spend-limit".into(),
+            title: "Monthly spend".into(),
+            window: rate_window(0.0, None),
+            amount: None,
+        }];
+
+        let readout = constraining_readout(&snapshot);
+        assert_eq!(readout.label, Some("Monthly spend"));
+        assert!(readout.named_state.is_none());
+        assert_eq!(strip_readout_percent(&readout, true), Some(0));
     }
 
     /// SBS-876: omitting the percent is only half the job. Without a label the
