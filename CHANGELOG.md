@@ -2,6 +2,20 @@
 
 ## [Ceiling] Unreleased
 
+## [Ceiling] 1.5.46 - 2026-10-26
+
+Claude Enterprise seats show their monthly spend, and the dashboard and taskbar flyout follow the Windows theme.
+
+### Added
+- **Pick Light, Dark or Auto for the dashboard.** The footer's theme toggle is now a Light / Dark / Auto menu. Auto follows the Windows theme as it changes, window frames follow the chosen theme instead of always being dark, and every open window picks up a change. Thanks to @jayn2u.
+- **The taskbar flyout and provider icons follow the Windows theme.** The flyout was always dark. It now has light and dark palettes and follows a live theme change. Thanks to @jayn2u.
+
+### Fixed
+- **Claude Enterprise seats show their monthly spend.** Enterprise accounts have a monthly spend limit instead of a 5-hour window, so the tray and taskbar showed "Unavailable". They now show a Monthly spend meter with the amount used against the limit. Fixes #513. Thanks to @gavira-iag.
+
+### Internal
+- Tauri 2.12 and other dependency upgrades (`sha2` 0.11, `rmcp` 3, `toml` 1.1, `aes-gcm` 0.11, `fluent-templates` 0.15, `webview2-com` 0.39), with fixes for the `ctutils`, `@vitest/mocker` and `webpki` advisories.
+
 ## [Ceiling] 1.5.45 - 2026-10-14
 
 The floating bar no longer gets stuck off-screen after it is minimized.
