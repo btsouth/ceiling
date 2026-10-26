@@ -250,9 +250,9 @@ impl ClaudeUsageResponse {
 ///
 /// Enterprise seats have no five-hour or weekly window, just a monthly spend
 /// cap, so without this lane every glance surface reads the Session
-/// placeholder and shows "Unavailable" (#513). Accounts that report a session
-/// or weekly window keep their existing lanes, where spend only starts once
-/// the plan runs out.
+/// placeholder and shows "Unavailable" (#513). Accounts that report any other
+/// window keep their existing lanes, where spend only starts once the plan
+/// runs out.
 pub(super) fn with_spend_limit_lane(
     mut snapshot: UsageSnapshot,
     extra: Option<&ClaudeExtraUsage>,
@@ -261,7 +261,14 @@ pub(super) fn with_spend_limit_lane(
         .inactive_rate_windows
         .iter()
         .any(|window| window.id == CLAUDE_SESSION_WINDOW_ID);
-    if session_reported || snapshot.secondary.is_some() {
+    // Every other lane build_snapshot emits (seven-day model caps, OAuth
+    // apps, Design, Routines, promo and scoped weekly limits) is a reported
+    // limit, so spend is not the only one.
+    if session_reported
+        || snapshot.secondary.is_some()
+        || snapshot.model_specific.is_some()
+        || !snapshot.extra_rate_windows.is_empty()
+    {
         return snapshot;
     }
     if let Some(window) = extra.and_then(ClaudeExtraUsage::spend_limit_window) {
@@ -293,7 +300,8 @@ impl ClaudeExtraUsage {
             return None;
         }
         let limit = self.monthly_limit.filter(|limit| *limit > 0.0)?;
-        let used = self.used_credits.unwrap_or(0.0);
+        // Missing usage is unknown, not a measured $0.
+        let used = self.used_credits?;
         let currency = self.currency.clone().unwrap_or_else(|| "USD".to_string());
         Some(
             NamedRateWindow::new(
@@ -522,6 +530,8 @@ mod tests {
         for windows in [
             r#""five_hour": {"utilization": 10}"#,
             r#""seven_day": {"utilization": 10}"#,
+            r#""seven_day_opus": {"utilization": 10}"#,
+            r#""seven_day_oauth_apps": {"utilization": 10}"#,
         ] {
             let response: ClaudeUsageResponse =
                 serde_json::from_str(&format!("{{{windows}, {extra}}}")).expect("usage response");
@@ -538,11 +548,12 @@ mod tests {
     }
 
     #[test]
-    fn spend_limit_needs_an_enabled_positive_limit() {
+    fn spend_limit_needs_an_enabled_positive_limit_and_usage() {
         for extra in [
             r#"{"is_enabled": false, "monthly_limit": 5000, "used_credits": 100}"#,
             r#"{"is_enabled": true, "monthly_limit": 0, "used_credits": 100}"#,
             r#"{"is_enabled": true, "used_credits": 100}"#,
+            r#"{"is_enabled": true, "monthly_limit": 5000}"#,
         ] {
             let response: ClaudeUsageResponse =
                 serde_json::from_str(&format!(r#"{{"extra_usage": {extra}}}"#))
