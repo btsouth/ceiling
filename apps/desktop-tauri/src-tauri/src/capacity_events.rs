@@ -818,6 +818,11 @@ pub(crate) fn ignored_capacity_window(
     id: &str,
     title: &str,
 ) -> bool {
+    // Spend lanes measure money, not capacity: Claude's monthly spend limit
+    // (`claude-spend-limit`) and Cursor's on-demand overdraft.
+    if snapshot.provider_id == "claude" {
+        return id == "claude-spend-limit";
+    }
     if snapshot.provider_id != "cursor" {
         return false;
     }

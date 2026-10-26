@@ -292,7 +292,9 @@ export function constrainingWindow(
 
   for (const candidate of nonPrimaryWindows(provider)) {
     if (isModelScopedLane(provider.providerId, candidate.id)) continue;
-    if (outranks(candidate, best)) {
+    // A placeholder primary is not a reading, so any real lane beats it,
+    // even a quiet 0% one (#513: an Enterprise seat at $0 of its spend limit).
+    if (best.namedState || outranks(candidate, best)) {
       best = candidate;
     }
   }
@@ -335,12 +337,13 @@ export function stripAmountLabel(
  * shown on overview however quiet they are:
  *  - Cursor's Auto and API are distinct allowances users need to compare.
  *  - Claude's Weekly sits beside the 5-hour session; both cap the subscription.
+ *    Seats metered only by a monthly spend limit (Enterprise) show that instead.
  *  - OpenCode Go bills against rolling, weekly, and monthly ceilings at once, so
  *    hiding weekly leaves a gap between the two windows that do show.
  */
 const PINNED_COMPANION_IDS: Record<string, string[]> = {
   cursor: ["secondary", "extra-cursor-api"],
-  claude: ["secondary"],
+  claude: ["secondary", "extra-claude-spend-limit"],
   opencodego: ["secondary", "tertiary"],
 };
 

@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 use super::UtilizationScale;
-use crate::core::{CostSnapshot, NamedRateWindow, RateWindow, UsageSnapshot};
+use crate::core::{CostSnapshot, NamedRateWindow, RateWindow, UsageSnapshot, WindowAmount};
 
 /// Marks the required primary slot as a placeholder when `five_hour` or its
 /// utilization is absent. Glance surfaces treat this id as unknown, not 0%
@@ -9,6 +9,12 @@ use crate::core::{CostSnapshot, NamedRateWindow, RateWindow, UsageSnapshot};
 pub(super) const CLAUDE_SESSION_WINDOW_ID: &str = "claude-session";
 const CLAUDE_SESSION_TITLE: &str = "Session (5h)";
 const NO_SESSION_USAGE_REPORTED: &str = "No usage reported";
+
+/// Monthly spend lane for seats metered only by an overage spend limit, such
+/// as Claude Enterprise. Kept out of capacity events like Cursor's on-demand
+/// lane: it measures money, not subscription capacity.
+const CLAUDE_SPEND_LIMIT_WINDOW_ID: &str = "claude-spend-limit";
+const CLAUDE_SPEND_LIMIT_TITLE: &str = "Monthly spend";
 
 /// Usage payload shared by Claude's OAuth and web endpoints.
 ///
@@ -240,6 +246,37 @@ impl ClaudeUsageResponse {
     }
 }
 
+/// Meter the monthly spend limit when it is the only limit Claude reports.
+///
+/// Enterprise seats have no five-hour or weekly window, just a monthly spend
+/// cap, so without this lane every glance surface reads the Session
+/// placeholder and shows "Unavailable" (#513). Accounts that report any other
+/// window keep their existing lanes, where spend only starts once the plan
+/// runs out.
+pub(super) fn with_spend_limit_lane(
+    mut snapshot: UsageSnapshot,
+    extra: Option<&ClaudeExtraUsage>,
+) -> UsageSnapshot {
+    let session_reported = !snapshot
+        .inactive_rate_windows
+        .iter()
+        .any(|window| window.id == CLAUDE_SESSION_WINDOW_ID);
+    // Every other lane build_snapshot emits (seven-day model caps, OAuth
+    // apps, Design, Routines, promo and scoped weekly limits) is a reported
+    // limit, so spend is not the only one.
+    if session_reported
+        || snapshot.secondary.is_some()
+        || snapshot.model_specific.is_some()
+        || !snapshot.extra_rate_windows.is_empty()
+    {
+        return snapshot;
+    }
+    if let Some(window) = extra.and_then(ClaudeExtraUsage::spend_limit_window) {
+        snapshot.extra_rate_windows.push(window);
+    }
+    snapshot
+}
+
 impl ClaudeExtraUsage {
     pub(super) fn cost_snapshot(&self) -> Option<CostSnapshot> {
         let extra = self;
@@ -256,6 +293,24 @@ impl ClaudeExtraUsage {
             cost = cost.with_limit(limit / 100.0);
         }
         Some(cost)
+    }
+
+    fn spend_limit_window(&self) -> Option<NamedRateWindow> {
+        if !self.is_enabled.unwrap_or(false) {
+            return None;
+        }
+        let limit = self.monthly_limit.filter(|limit| *limit > 0.0)?;
+        // Missing usage is unknown, not a measured $0.
+        let used = self.used_credits?;
+        let currency = self.currency.clone().unwrap_or_else(|| "USD".to_string());
+        Some(
+            NamedRateWindow::new(
+                CLAUDE_SPEND_LIMIT_WINDOW_ID,
+                CLAUDE_SPEND_LIMIT_TITLE,
+                RateWindow::new(used / limit * 100.0),
+            )
+            .with_amount(WindowAmount::new(used / 100.0, currency).with_limit(limit / 100.0)),
+        )
     }
 }
 
@@ -418,5 +473,94 @@ mod tests {
                 .all(|window| window.id != "claude-session"),
             "a reported 0% session is a reading, not unknown"
         );
+    }
+
+    /// #513: Enterprise seats report only a monthly spend limit.
+    #[test]
+    fn spend_limit_is_metered_when_it_is_the_only_limit() {
+        let response: ClaudeUsageResponse = serde_json::from_str(
+            r#"{
+                "five_hour": null,
+                "seven_day": null,
+                "extra_usage": {
+                    "is_enabled": true,
+                    "monthly_limit": 18000,
+                    "used_credits": 4500,
+                    "currency": "USD"
+                }
+            }"#,
+        )
+        .expect("usage response");
+
+        let usage =
+            super::with_spend_limit_lane(snapshot(&response), response.extra_usage.as_ref());
+        let lane = usage
+            .extra_rate_windows
+            .iter()
+            .find(|window| window.id == "claude-spend-limit")
+            .expect("spend lane");
+        assert_eq!(lane.title, "Monthly spend");
+        assert_eq!(lane.window.used_percent, 25.0);
+        let amount = lane.amount.as_ref().expect("amount");
+        assert_eq!(amount.used, 45.0);
+        assert_eq!(amount.limit, Some(180.0));
+    }
+
+    #[test]
+    fn spend_limit_over_the_cap_reads_exhausted() {
+        let response: ClaudeUsageResponse = serde_json::from_str(
+            r#"{"extra_usage": {"is_enabled": true, "monthly_limit": 18000, "used_credits": 18116}}"#,
+        )
+        .expect("usage response");
+
+        let usage =
+            super::with_spend_limit_lane(snapshot(&response), response.extra_usage.as_ref());
+        let lane = usage
+            .extra_rate_windows
+            .iter()
+            .find(|window| window.id == "claude-spend-limit")
+            .expect("spend lane");
+        assert_eq!(lane.window.used_percent, 100.0);
+    }
+
+    #[test]
+    fn spend_limit_stays_off_plans_with_a_session_or_weekly_window() {
+        let extra =
+            r#""extra_usage": {"is_enabled": true, "monthly_limit": 5000, "used_credits": 100}"#;
+        for windows in [
+            r#""five_hour": {"utilization": 10}"#,
+            r#""seven_day": {"utilization": 10}"#,
+            r#""seven_day_opus": {"utilization": 10}"#,
+            r#""seven_day_oauth_apps": {"utilization": 10}"#,
+        ] {
+            let response: ClaudeUsageResponse =
+                serde_json::from_str(&format!("{{{windows}, {extra}}}")).expect("usage response");
+            let usage =
+                super::with_spend_limit_lane(snapshot(&response), response.extra_usage.as_ref());
+            assert!(
+                usage
+                    .extra_rate_windows
+                    .iter()
+                    .all(|window| window.id != "claude-spend-limit"),
+                "{windows}"
+            );
+        }
+    }
+
+    #[test]
+    fn spend_limit_needs_an_enabled_positive_limit_and_usage() {
+        for extra in [
+            r#"{"is_enabled": false, "monthly_limit": 5000, "used_credits": 100}"#,
+            r#"{"is_enabled": true, "monthly_limit": 0, "used_credits": 100}"#,
+            r#"{"is_enabled": true, "used_credits": 100}"#,
+            r#"{"is_enabled": true, "monthly_limit": 5000}"#,
+        ] {
+            let response: ClaudeUsageResponse =
+                serde_json::from_str(&format!(r#"{{"extra_usage": {extra}}}"#))
+                    .expect("usage response");
+            let usage =
+                super::with_spend_limit_lane(snapshot(&response), response.extra_usage.as_ref());
+            assert!(usage.extra_rate_windows.is_empty(), "{extra}");
+        }
     }
 }

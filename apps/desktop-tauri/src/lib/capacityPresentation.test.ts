@@ -896,6 +896,48 @@ describe("capacityPresentation", () => {
       ).toBe(false);
     });
 
+    it("meters an Enterprise seat on its monthly spend limit (#513)", () => {
+      const enterprise = (usedPercent: number, used: number) =>
+        provider({
+          providerId: "claude",
+          displayName: "Claude",
+          primary: window(0),
+          primaryLabel: "Session (5h)",
+          extraRateWindows: [
+            {
+              id: "claude-spend-limit",
+              title: "Monthly spend",
+              window: window(usedPercent),
+              amount: {
+                used,
+                limit: 180,
+                currencyCode: "USD",
+                formattedUsed: `$${used.toFixed(2)}`,
+                formattedLimit: "$180.00",
+              },
+            },
+          ],
+          inactiveRateWindows: [
+            {
+              id: "claude-session",
+              title: "Session (5h)",
+              description: "No usage reported",
+              state: "unavailable",
+            },
+          ],
+        });
+
+      const spending = enterprise(25, 45);
+      expect(constrainingWindow(spending).label).toBe("Monthly spend");
+      expect(constrainingWindow(spending).namedState).toBeUndefined();
+      expect(glanceMeters(spending).companions.map((meter) => meter.label)).toEqual([
+        "Monthly spend",
+      ]);
+
+      // $0 of the limit is still a reading, not the Session placeholder.
+      expect(constrainingWindow(enterprise(0, 0)).label).toBe("Monthly spend");
+    });
+
     it("does not invent 0% when Vertex fetch/decode failed (SBS-1061)", () => {
       const snap = provider({
         providerId: "vertexai",

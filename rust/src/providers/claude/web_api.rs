@@ -296,8 +296,12 @@ impl ClaudeWebApiFetcher {
 
         // Build every common Claude usage lane through one normalized path so
         // OAuth and web cannot silently drop fields the other source renders.
-        let mut snapshot = usage
-            .build_snapshot(|window, minutes, scale| self.to_rate_window(window, minutes, scale));
+        let mut snapshot = super::usage_api::with_spend_limit_lane(
+            usage.build_snapshot(|window, minutes, scale| {
+                self.to_rate_window(window, minutes, scale)
+            }),
+            extra_usage.as_ref(),
+        );
 
         if let Some(promo) = usage.seven_day_promotional.as_ref() {
             let ends_at = promo
