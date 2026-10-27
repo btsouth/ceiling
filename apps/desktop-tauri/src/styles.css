@@ -7614,6 +7614,7 @@ body:has(.dashboard-shell) #root {
   position: relative;
   isolation: isolate;
   overflow: hidden;
+  flex: 0 0 auto;
   padding: 14px;
   border: 1px solid color-mix(in srgb, var(--ceiling-accent) 25%, var(--ceiling-glass-border));
   border-radius: 13px;
