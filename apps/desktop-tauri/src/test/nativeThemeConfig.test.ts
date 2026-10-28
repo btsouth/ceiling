@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import tauriConfigSource from "../../src-tauri/tauri.conf.json?raw";
+import mainSource from "../../src-tauri/src/main.rs?raw";
 import settingsWindowSource from "../../src-tauri/src/shell/settings_window.rs?raw";
 import flyoutWindowSource from "../../src-tauri/src/shell/flyout_window.rs?raw";
 import dwmSource from "../../src-tauri/src/shell/dwm.rs?raw";
@@ -41,6 +42,10 @@ describe("native theme configuration", () => {
     );
     expect(settingsWindowSource).toMatch(
       /WindowEvent::ThemeChanged\(theme\)[\s\S]*?apply_backdrop\([\s\S]*?Backdrop::Opaque\(\*theme\)/,
+    );
+    // That handler runs only because the app's window-event callback in main.rs calls it.
+    expect(mainSource).toMatch(
+      /\.on_window_event\(move \|window, event\| \{[\s\S]*?shell::settings_window::handle_window_event\(window, event\)/,
     );
     // The flyout is see-through; an opaque fill would cover its rounded frame.
     expect(flyoutWindowSource).toMatch(
