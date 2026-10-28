@@ -21,7 +21,8 @@ if ($status.IsSuccess -ne $true) {
     throw "Microsoft Store reported an unsuccessful submission status."
 }
 
-$uploadFailed = @($status.Errors | Where-Object { $_.Code -eq 'packageuploaderror' }).Count -gt 0
+# Errors is null when the Store has nothing to report.
+$uploadFailed = @($status.Errors | Where-Object { $null -ne $_ -and $_.Code -eq 'packageuploaderror' }).Count -gt 0
 if ($RecoverFailedUpload) {
     if (-not $uploadFailed) {
         throw "Recovery was requested, but the Store did not report a failed package upload."

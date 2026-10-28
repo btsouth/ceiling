@@ -37,6 +37,7 @@ Retrieving submission status
   "Errors": []
 }
 '@
+$readyNullErrors = $ready.Replace('"Errors": []', '"Errors": null')
 $ongoingFailedUpload = $failedUpload.Replace('"OngoingSubmissionId": null', '"OngoingSubmissionId": "submission-123"')
 $unsuccessful = $ready.Replace('"IsSuccess": true', '"IsSuccess": false')
 
@@ -44,6 +45,7 @@ Assert-Fails -StatusOutput $failedUpload
 & $scriptPath -StatusOutput $failedUpload -RecoverFailedUpload
 Assert-Fails -StatusOutput $ongoingFailedUpload -RecoverFailedUpload $true
 & $scriptPath -StatusOutput $ready
+& $scriptPath -StatusOutput $readyNullErrors
 Assert-Fails -StatusOutput $ready -RecoverFailedUpload $true
 Assert-Fails -StatusOutput $unsuccessful
 Assert-Fails -StatusOutput 'Retrieving submission status'
