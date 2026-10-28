@@ -34,6 +34,20 @@ describe("native theme configuration", () => {
     expect(dwmSource).not.toMatch(/DWMWA_USE_IMMERSIVE_DARK_MODE|DWMWA_CAPTION_COLOR/);
   });
 
+  it("keeps the Settings background on the window theme, including live changes", () => {
+    expect(dwmSource).not.toMatch(/CreateSolidBrush|GCL_HBRBACKGROUND/);
+    expect(settingsWindowSource).toMatch(
+      /Backdrop::Opaque\(\s*super::dwm::current_theme\(&win\)\s*\)/,
+    );
+    expect(settingsWindowSource).toMatch(
+      /WindowEvent::ThemeChanged\(theme\)[\s\S]*?apply_backdrop\([\s\S]*?Backdrop::Opaque\(\*theme\)/,
+    );
+    // The flyout is see-through; an opaque fill would cover its rounded frame.
+    expect(flyoutWindowSource).toMatch(
+      /force_borderless_caption\(&win, super::dwm::Backdrop::Transparent\)/,
+    );
+  });
+
   it("grants set-theme only to the app's existing Tauri window groups", () => {
     const capabilitySources = [
       mainCapabilitySource,

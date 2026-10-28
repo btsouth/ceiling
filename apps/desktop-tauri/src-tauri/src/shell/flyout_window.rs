@@ -191,7 +191,7 @@ pub fn open_or_focus(app: &AppHandle, position: Option<(i32, i32)>) -> Result<()
     restamp_reveal(app);
     super::webview_lifecycle::watch(app, &win);
 
-    super::dwm::force_dark_caption(&win);
+    super::dwm::force_borderless_caption(&win, super::dwm::Backdrop::Transparent);
 
     let target_position =
         position.or_else(|| super::position::default_surface_position(app, SurfaceMode::TrayPanel));

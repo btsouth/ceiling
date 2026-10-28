@@ -65,9 +65,12 @@ pub fn apply_window_layout(
     // this subclass, so decorated surfaces skip it.
     if !props.decorations {
         if props.resizable {
-            super::dwm::force_dark_caption_resizable(window);
+            super::dwm::force_borderless_caption_resizable(
+                window,
+                super::dwm::Backdrop::Transparent,
+            );
         } else {
-            super::dwm::force_dark_caption(window);
+            super::dwm::force_borderless_caption(window, super::dwm::Backdrop::Transparent);
         }
     }
 
