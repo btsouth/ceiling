@@ -58,8 +58,11 @@ pub fn open_or_focus(app: &tauri::AppHandle, tab: &str) -> Result<(), String> {
     };
     super::webview_lifecycle::watch(app, &win);
 
-    // Force DWM caption to dark; keep WS_THICKFRAME since window is resizable
-    super::dwm::force_dark_caption_resizable(&win);
+    // Strip the native caption but keep WS_THICKFRAME since the window is
+    // resizable. Settings is opaque, so its native background follows the
+    // window theme; `handle_window_event` re-applies it when that changes.
+    let backdrop = super::dwm::Backdrop::Opaque(super::dwm::current_theme(&win));
+    super::dwm::force_borderless_caption_resizable(&win, backdrop);
 
     if let Some((x, y)) = super::position::default_surface_position(app, SurfaceMode::Settings) {
         let _ = win.set_position(PhysicalPosition::new(x, y));
@@ -70,10 +73,19 @@ pub fn open_or_focus(app: &tauri::AppHandle, tab: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Persist move and resize events for the detached Settings window.
+/// Persist move and resize events for the detached Settings window, and keep
+/// its native background on the resolved theme.
 pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) -> bool {
     if window.label() != SETTINGS_LABEL {
         return false;
+    }
+
+    // Fired for a live Windows switch while the preference is Auto, and when
+    // the frontend's `setTheme` picks Light or Dark explicitly.
+    if let tauri::WindowEvent::ThemeChanged(theme) = event
+        && let Some(win) = window.get_webview_window(SETTINGS_LABEL)
+    {
+        super::dwm::apply_backdrop(&win, super::dwm::Backdrop::Opaque(*theme));
     }
 
     if matches!(

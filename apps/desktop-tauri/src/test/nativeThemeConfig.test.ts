@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import tauriConfigSource from "../../src-tauri/tauri.conf.json?raw";
+import mainSource from "../../src-tauri/src/main.rs?raw";
 import settingsWindowSource from "../../src-tauri/src/shell/settings_window.rs?raw";
 import flyoutWindowSource from "../../src-tauri/src/shell/flyout_window.rs?raw";
 import dwmSource from "../../src-tauri/src/shell/dwm.rs?raw";
@@ -32,6 +33,24 @@ describe("native theme configuration", () => {
 
   it("does not force dark DWM colors on borderless windows", () => {
     expect(dwmSource).not.toMatch(/DWMWA_USE_IMMERSIVE_DARK_MODE|DWMWA_CAPTION_COLOR/);
+  });
+
+  it("keeps the Settings background on the window theme, including live changes", () => {
+    expect(dwmSource).not.toMatch(/CreateSolidBrush|GCL_HBRBACKGROUND/);
+    expect(settingsWindowSource).toMatch(
+      /Backdrop::Opaque\(\s*super::dwm::current_theme\(&win\)\s*\)/,
+    );
+    expect(settingsWindowSource).toMatch(
+      /WindowEvent::ThemeChanged\(theme\)[\s\S]*?apply_backdrop\([\s\S]*?Backdrop::Opaque\(\*theme\)/,
+    );
+    // That handler runs only because the app's window-event callback in main.rs calls it.
+    expect(mainSource).toMatch(
+      /\.on_window_event\(move \|window, event\| \{[\s\S]*?shell::settings_window::handle_window_event\(window, event\)/,
+    );
+    // The flyout is see-through; an opaque fill would cover its rounded frame.
+    expect(flyoutWindowSource).toMatch(
+      /force_borderless_caption\(&win, super::dwm::Backdrop::Transparent\)/,
+    );
   });
 
   it("grants set-theme only to the app's existing Tauri window groups", () => {

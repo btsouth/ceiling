@@ -374,7 +374,7 @@ fn replay_on_main_thread(app: &AppHandle, request: MainRequest) {
 /// faithful recipe is `WebviewWindowBuilder::from_config` over that entry —
 /// which also means the rebuilt window inherits `"visible": false` and the
 /// rest of its declared properties, exactly as at startup. What `setup` does
-/// to it afterwards (register it, `force_dark_caption`, `hide()`) is repeated
+/// to it afterwards (register it, `force_borderless_caption`, `hide()`) is repeated
 /// here so a recovered window is indistinguishable from a freshly-launched
 /// one, and in particular can never flash a frame of its own before the
 /// surface machinery decides to show it.
@@ -401,7 +401,7 @@ fn rebuild_main(app: &AppHandle) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     register_main(app, &window);
 
-    super::dwm::force_dark_caption(&window);
+    super::dwm::force_borderless_caption(&window, super::dwm::Backdrop::Transparent);
     window.hide().map_err(|error| error.to_string())?;
     super::transition::commit_surface_snapshot(app, &super::transition::hidden_surface_snapshot())
 }

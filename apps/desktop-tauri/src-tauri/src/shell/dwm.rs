@@ -4,6 +4,10 @@
 //! that DWM renders. We install a window subclass that intercepts
 //! WM_NCCALCSIZE to zero the non-client area and WM_NCPAINT/WM_NCACTIVATE
 //! to suppress DWM painting, making the window truly borderless.
+//!
+//! Opaque borderless windows also get a native background that follows the
+//! resolved light/dark theme (see [`Backdrop`]), so the area behind the
+//! WebView matches the page while the window opens or resizes.
 
 #[cfg(windows)]
 use std::ffi::c_void;
@@ -116,14 +120,50 @@ unsafe extern "system" {
     ) -> i32;
 }
 
-#[cfg(windows)]
-#[link(name = "gdi32")]
-unsafe extern "system" {
-    fn CreateSolidBrush(color: u32) -> isize;
+/// `--app-bg` of the light theme in `styles.css`.
+const LIGHT_BACKDROP: (u8, u8, u8) = (0xF5, 0xF7, 0xFA);
+/// `--app-bg` of the dark theme in `styles.css`.
+const DARK_BACKDROP: (u8, u8, u8) = (0x1C, 0x20, 0x26);
+
+/// What the native window shows behind its WebView.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Backdrop {
+    /// See-through windows (the dashboard and the taskbar flyout) keep the
+    /// default transparent background. Their DWM frame follows the theme
+    /// through `setTheme`.
+    Transparent,
+    /// Opaque windows (Settings) are filled with the app background of the
+    /// given theme, so a light window does not flash dark while it opens or
+    /// resizes. Apply it again when the window theme changes.
+    Opaque(tauri::Theme),
 }
 
-#[cfg(windows)]
-static DARK_BRUSH: std::sync::OnceLock<isize> = std::sync::OnceLock::new();
+/// Background colour painted behind the WebView of an opaque window.
+pub fn backdrop_color(theme: tauri::Theme) -> tauri::window::Color {
+    let (r, g, b) = match theme {
+        tauri::Theme::Light => LIGHT_BACKDROP,
+        _ => DARK_BACKDROP,
+    };
+    tauri::window::Color(r, g, b, 255)
+}
+
+/// The window's current theme, or dark when it can't be read.
+pub fn current_theme(win: &tauri::WebviewWindow) -> tauri::Theme {
+    win.theme().unwrap_or(tauri::Theme::Dark)
+}
+
+/// Apply `backdrop` to the native window and to the WebView's default
+/// background, which is what shows before the page paints and in the strip a
+/// resize exposes. Tauri keeps both per window, unlike the window class
+/// brush, which every Tauri window shares.
+pub fn apply_backdrop(win: &tauri::WebviewWindow, backdrop: Backdrop) {
+    let Backdrop::Opaque(theme) = backdrop else {
+        return;
+    };
+    if let Err(error) = win.set_background_color(Some(backdrop_color(theme))) {
+        tracing::warn!("dwm: couldn't set the {theme:?} background: {error}");
+    }
+}
 
 #[cfg(windows)]
 const WM_NCCALCSIZE: u32 = 0x0083;
@@ -197,24 +237,26 @@ unsafe extern "system" fn borderless_subclass_proc(
 }
 
 /// Eliminate the DWM caption bar by subclassing the window to zero the
-/// non-client area.  Safe to call on multiple windows — each gets its
-/// own subclass via `SetWindowSubclass`.
-///
-/// When `resizable` is true, `WS_THICKFRAME` is preserved so the native
-/// resize affordance still works.
+/// non-client area, and apply `backdrop`.  Safe to call on multiple
+/// windows — each gets its own subclass via `SetWindowSubclass`.
 #[cfg(windows)]
-pub fn force_dark_caption(win: &tauri::WebviewWindow) {
-    force_dark_caption_inner(win, false);
+pub fn force_borderless_caption(win: &tauri::WebviewWindow, backdrop: Backdrop) {
+    force_borderless_caption_inner(win, false, backdrop);
 }
 
-/// Same as [`force_dark_caption`] but keeps the resize frame.
+/// Same as [`force_borderless_caption`] but keeps `WS_THICKFRAME`, so the
+/// native resize affordance still works.
 #[cfg(windows)]
-pub fn force_dark_caption_resizable(win: &tauri::WebviewWindow) {
-    force_dark_caption_inner(win, true);
+pub fn force_borderless_caption_resizable(win: &tauri::WebviewWindow, backdrop: Backdrop) {
+    force_borderless_caption_inner(win, true, backdrop);
 }
 
 #[cfg(windows)]
-fn force_dark_caption_inner(win: &tauri::WebviewWindow, keep_resize: bool) {
+fn force_borderless_caption_inner(
+    win: &tauri::WebviewWindow,
+    keep_resize: bool,
+    backdrop: Backdrop,
+) {
     use raw_window_handle::HasWindowHandle;
 
     let Ok(handle) = win.window_handle() else {
@@ -260,13 +302,6 @@ fn force_dark_caption_inner(win: &tauri::WebviewWindow, keep_resize: bool) {
         let ok = SetWindowSubclass(hwnd, borderless_subclass_proc, BORDERLESS_SUBCLASS_ID, 0);
         tracing::info!("dwm: subclass installed={ok}");
 
-        // Set background brush to dark (reuse a single GDI brush)
-        const GCL_HBRBACKGROUND: i32 = -10;
-        let brush = *DARK_BRUSH.get_or_init(|| CreateSolidBrush(0x001C1C1E));
-        if brush != 0 {
-            SetWindowLongPtrW(hwnd, GCL_HBRBACKGROUND, brush);
-        }
-
         // Remove WS_CAPTION; only strip WS_THICKFRAME for non-resizable windows
         const GWL_STYLE: i32 = -16;
         const WS_CAPTION: isize = 0x00C00000;
@@ -301,10 +336,61 @@ fn force_dark_caption_inner(win: &tauri::WebviewWindow, keep_resize: bool) {
             SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
         );
     }
+
+    apply_backdrop(win, backdrop);
 }
 
 #[cfg(not(windows))]
-pub fn force_dark_caption(_win: &tauri::WebviewWindow) {}
+pub fn force_borderless_caption(win: &tauri::WebviewWindow, backdrop: Backdrop) {
+    apply_backdrop(win, backdrop);
+}
 
 #[cfg(not(windows))]
-pub fn force_dark_caption_resizable(_win: &tauri::WebviewWindow) {}
+pub fn force_borderless_caption_resizable(win: &tauri::WebviewWindow, backdrop: Backdrop) {
+    apply_backdrop(win, backdrop);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--app-bg` (`#rrggbb`) inside the `[data-theme="..."]` block of `styles.css`.
+    fn css_app_background(theme: &str) -> tauri::window::Color {
+        let css = include_str!("../../../src/styles.css");
+        let selector = format!("[data-theme=\"{theme}\"] {{");
+        let start = css.find(&selector).expect("theme block") + selector.len();
+        let block = &css[start..start + css[start..].find('}').expect("block end")];
+        let value = block
+            .split("--app-bg:")
+            .nth(1)
+            .expect("--app-bg in theme block")
+            .trim_start();
+        let hex = value.strip_prefix('#').expect("hex colour");
+        let channel = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex digit");
+        tauri::window::Color(channel(0), channel(2), channel(4), 255)
+    }
+
+    #[test]
+    fn backdrop_color_matches_app_background_per_theme() {
+        assert_eq!(
+            backdrop_color(tauri::Theme::Light),
+            tauri::window::Color(0xF5, 0xF7, 0xFA, 255)
+        );
+        assert_eq!(
+            backdrop_color(tauri::Theme::Dark),
+            tauri::window::Color(0x1C, 0x20, 0x26, 255)
+        );
+    }
+
+    #[test]
+    fn backdrop_color_tracks_the_css_app_background() {
+        assert_eq!(
+            backdrop_color(tauri::Theme::Light),
+            css_app_background("light")
+        );
+        assert_eq!(
+            backdrop_color(tauri::Theme::Dark),
+            css_app_background("dark")
+        );
+    }
+}
