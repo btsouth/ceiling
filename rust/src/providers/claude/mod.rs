@@ -674,7 +674,10 @@ impl ClaudeProvider {
                 }
                 let result = self.oauth_fetcher.scoped(dir.to_path_buf()).fetch().await;
                 let missing = result.is_err()
-                    && !is_default_account(dir, crate::core::ambient_claude_config_dir().as_deref())
+                    && !is_default_account(
+                        dir,
+                        crate::core::ambient_claude_config_dir().as_deref(),
+                    )
                     && !oauth::claude_code_signed_in(Some(dir));
                 result.map_err(|error| scoped_oauth_error(dir, error, missing))
             }
