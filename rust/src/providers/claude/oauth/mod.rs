@@ -21,6 +21,10 @@ pub(super) fn credentials_file_available(config_dir: Option<&std::path::Path>) -
     credentials_store::credentials_file_available(config_dir)
 }
 
+pub(super) fn credentials_missing(config_dir: &std::path::Path) -> bool {
+    credentials_store::credentials_missing(config_dir)
+}
+
 /// OAuth credentials from Claude CLI
 #[derive(Debug, Clone)]
 pub struct ClaudeOAuthCredentials {

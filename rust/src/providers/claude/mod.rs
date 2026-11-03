@@ -604,7 +604,9 @@ impl ClaudeProvider {
         // identity or usage into another configured account card.
         match claude_oauth_source(ctx) {
             ClaudeOAuthSource::Scoped(dir) => {
-                self.oauth_fetcher.scoped(dir.to_path_buf()).fetch().await
+                let result = self.oauth_fetcher.scoped(dir.to_path_buf()).fetch().await;
+                let missing = result.is_err() && oauth::credentials_missing(dir);
+                result.map_err(|error| scoped_oauth_error(dir, error, missing))
             }
             ClaudeOAuthSource::AccessToken(token) => {
                 self.oauth_fetcher.fetch_with_access_token(token).await
@@ -809,6 +811,25 @@ fn claude_auto_fetch_error(failures: Vec<(&'static str, ProviderError)>) -> Prov
 
     ProviderError::Other(format!(
         "Claude usage failed from all configured sources. {summary}"
+    ))
+}
+
+/// A configured account never falls back to the Claude Desktop session, so a
+/// directory without credentials needs to say so and name the ways out.
+/// Any other failure (expired token, network) keeps its own message.
+fn scoped_oauth_error(
+    dir: &std::path::Path,
+    error: ProviderError,
+    credentials_missing: bool,
+) -> ProviderError {
+    if !credentials_missing {
+        return error;
+    }
+    // Keep this free of "Claude OAuth credentials not found": the desktop
+    // bridge rewrites that phrase into a generic sign-in hint.
+    ProviderError::OAuth(format!(
+        "No Claude Code sign-in found in {}. A configured Claude account is read only from its own directory, not from the Claude Desktop session. To fix this, run `claude` with CLAUDE_CONFIG_DIR set to that directory and sign in, or remove the account in Ceiling; with no Claude account configured, Ceiling uses the Claude Desktop session.",
+        dir.display()
     ))
 }
 
@@ -1669,6 +1690,62 @@ Resets Dec 24 at 3:59pm (Europe/Paris)
         assert_eq!(
             err.to_string(),
             "Claude usage failed from all configured sources. OAuth: OAuth error: token expired; Web: No cookies available for web API; CLI: Parse error: Empty output from Claude CLI"
+        );
+    }
+
+    #[test]
+    fn scoped_missing_credentials_error_explains_desktop_session_skip() {
+        let dir = std::path::Path::new(r"C:\Users\person\.claude-work");
+        let err = scoped_oauth_error(
+            dir,
+            ProviderError::OAuth("credentials not found".to_string()),
+            true,
+        );
+
+        assert!(matches!(err, ProviderError::OAuth(_)));
+        let message = err.to_string();
+        assert_eq!(
+            message,
+            format!(
+                "OAuth error: No Claude Code sign-in found in {}. A configured Claude account is read only from its own directory, not from the Claude Desktop session. To fix this, run `claude` with CLAUDE_CONFIG_DIR set to that directory and sign in, or remove the account in Ceiling; with no Claude account configured, Ceiling uses the Claude Desktop session.",
+                dir.display()
+            )
+        );
+        let lower = message.to_lowercase();
+        assert!(
+            !lower.contains("claude oauth credentials not found"),
+            "the desktop bridge would replace this message with a generic hint"
+        );
+    }
+
+    #[test]
+    fn scoped_oauth_error_keeps_other_failures() {
+        let dir = std::path::Path::new(r"C:\Users\person\.claude-work");
+        let err = scoped_oauth_error(
+            dir,
+            ProviderError::OAuth("OAuth token expired. Run `claude` to refresh.".to_string()),
+            false,
+        );
+
+        assert_eq!(
+            err.to_string(),
+            "OAuth error: OAuth token expired. Run `claude` to refresh."
+        );
+    }
+
+    #[test]
+    fn scoped_credentials_missing_only_without_a_credentials_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(oauth::credentials_missing(dir.path()));
+
+        std::fs::write(
+            crate::core::claude_credentials_path(dir.path()),
+            "not valid credentials json",
+        )
+        .expect("write credentials file");
+        assert!(
+            !oauth::credentials_missing(dir.path()),
+            "a malformed file is a different failure and keeps its own message"
         );
     }
 

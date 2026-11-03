@@ -183,6 +183,14 @@ pub(super) fn credentials_file_available(config_dir: Option<&Path>) -> bool {
     load_from_file(config_dir).is_ok()
 }
 
+/// Whether `config_dir` has no credentials at all: no credentials file, and
+/// nothing in the fallback stores `load_credentials` consults for it. A file
+/// that exists but is unreadable, malformed, or expired does not count.
+pub(super) fn credentials_missing(config_dir: &Path) -> bool {
+    !crate::core::claude_credentials_path(config_dir).exists()
+        && load_credentials(Some(config_dir)).is_err()
+}
+
 /// Load credentials from Claude Code's OS keychain / credential manager entry.
 fn load_from_keyring() -> Result<Option<(ClaudeOAuthCredentials, CredentialSource)>, ProviderError>
 {
