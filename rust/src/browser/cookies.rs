@@ -396,6 +396,32 @@ impl CookieExtractor {
         Self::dpapi_decrypt(encrypted_key)
     }
 
+    /// Decrypt a `v10` / `v11` secret an Electron or Chromium app stored outside
+    /// its cookie database, using that profile's `Local State` key.
+    pub fn decrypt_chromium_secret(
+        local_state_path: &Path,
+        encrypted: &[u8],
+    ) -> Result<Vec<u8>, CookieError> {
+        let key = Self::get_chromium_encryption_key(local_state_path)?;
+        Self::decrypt_aes_gcm_secret(encrypted, &key)
+    }
+
+    fn decrypt_aes_gcm_secret(encrypted: &[u8], key: &[u8]) -> Result<Vec<u8>, CookieError> {
+        // 3 byte prefix + 12 byte nonce + ciphertext + 16 byte tag
+        if encrypted.len() < 31 || !matches!(&encrypted[..3], b"v10" | b"v11") {
+            return Err(CookieError::Decryption(
+                "unrecognized secret format".to_string(),
+            ));
+        }
+        let cipher = Aes256Gcm::new_from_slice(key)
+            .map_err(|e| CookieError::Decryption(format!("cipher init: {e}")))?;
+        let nonce = Nonce::try_from(&encrypted[3..15])
+            .map_err(|e| CookieError::Decryption(format!("nonce: {e}")))?;
+        cipher
+            .decrypt(&nonce, &encrypted[15..])
+            .map_err(|e| CookieError::Decryption(format!("decrypt: {e}")))
+    }
+
     /// Decrypt data using Windows DPAPI
     #[cfg(windows)]
     fn dpapi_decrypt(encrypted_data: &[u8]) -> Result<Vec<u8>, CookieError> {
@@ -756,6 +782,32 @@ pub fn get_cookie_header_from_browser(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decrypts_a_chromium_secret_and_rejects_tampering() {
+        let key: Vec<u8> = [uuid::Uuid::new_v4(), uuid::Uuid::new_v4()]
+            .iter()
+            .flat_map(|id| *id.as_bytes())
+            .collect();
+        let nonce = [9u8; 12];
+        let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
+        let sealed = cipher
+            .encrypt(&Nonce::try_from(&nonce[..]).unwrap(), &b"{\"a\":1}"[..])
+            .unwrap();
+        let mut blob = b"v10".to_vec();
+        blob.extend_from_slice(&nonce);
+        blob.extend_from_slice(&sealed);
+
+        assert_eq!(
+            CookieExtractor::decrypt_aes_gcm_secret(&blob, &key).unwrap(),
+            b"{\"a\":1}"
+        );
+
+        let last = blob.len() - 1;
+        blob[last] ^= 1;
+        assert!(CookieExtractor::decrypt_aes_gcm_secret(&blob, &key).is_err());
+        assert!(CookieExtractor::decrypt_aes_gcm_secret(b"v20short", &key).is_err());
+    }
 
     #[test]
     fn multi_domain_lookup_prefers_a_later_readable_cookie_over_abe() {

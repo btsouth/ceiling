@@ -626,6 +626,10 @@ pub(crate) fn friendly_provider_error(id: ProviderId, error: &str) -> String {
         );
     }
 
+    if let Some(guidance) = trimmed.strip_prefix("OAuth error: Claude Desktop") {
+        return format!("Claude Desktop{guidance}");
+    }
+
     if lower.contains("claude oauth credentials not found") {
         return format!(
             "Claude CLI sign-in was not found. Run `claude` once in a terminal, then refresh Claude in Ceiling. {CLAUDE_CHARTS_WITHOUT_CAPACITY_NOTE}"
