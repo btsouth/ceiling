@@ -30,6 +30,9 @@ const WEEKLY_MINUTES: u32 = 7 * 24 * 60;
 /// Prepaid credits are what an X Subscription spends past its weekly pool.
 const CREDITS_PERIOD: &str = "Credits";
 const DASHBOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Matches `usage-summary`'s own limit, so this extra data never slows a refresh
+/// beyond what the plan data can already take.
+const GROK_BOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 pub(super) type CursorUsageResult = (UsageSnapshot, Option<CostSnapshot>);
 
@@ -59,7 +62,11 @@ impl CursorApi {
         let (usage_result, user_result, grok_bot) = tokio::join!(
             self.fetch_usage_summary(cookie_header),
             self.fetch_user_info(cookie_header),
-            self.fetch_grok_bot(cookie_header)
+            async {
+                tokio::time::timeout(GROK_BOT_TIMEOUT, self.fetch_grok_bot(cookie_header))
+                    .await
+                    .unwrap_or(None)
+            }
         );
 
         let usage_summary = usage_result?;
