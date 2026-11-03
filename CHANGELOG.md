@@ -2,11 +2,17 @@
 
 ## [Ceiling] Unreleased
 
+## [Ceiling] 1.5.47 - 2026-11-02
+
+Cursor shows Grok Bot usage, and reads the right meter on The X Subscription.
+
 ### Added
 - **Cursor shows Grok Bot usage.** On a Cursor plan or a linked Grok subscription, Grok Bot has its own weekly allowance. Once it has been used, it appears as a Grok Bot row beside Plan, Auto and API, with its on-demand spend for the billing month. Closes #524.
 
 ### Fixed
 - **Cursor reads the right meter on The X Subscription.** These accounts share one weekly pool across Cursor, Grok Bot and the Grok apps, but Cursor's monthly summary reports 0% for them, so Ceiling showed an empty plan with the wrong reset. The Cursor card now shows the weekly pool, its reset, the X plan name and any prepaid credits spent.
+- **The Settings window follows the Windows theme all the way to its edges.** Its native background stayed dark in a light theme, so it showed before the page painted and in the strip a resize exposes. It now matches the page and updates when the theme changes. Thanks to @sharmis-tp.
+- **The Available to track card keeps its size on short dashboards.** On a short window it could shrink until its title and footer were clipped. Thanks to @jayn2u.
 
 ## [Ceiling] 1.5.46 - 2026-10-26
 
