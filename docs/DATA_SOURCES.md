@@ -31,7 +31,7 @@ browser cookie databases; website cookies must be copied explicitly. See
 |----------|-------------------------|----------|
 | **Claude** | Your signed-in Claude Code / Claude Desktop session, an OAuth token, or claude.ai cookies you provide; plus local `~/.claude` logs for cost and tokens | api.anthropic.com, claude.ai |
 | **Codex / OpenAI** | The OAuth token from your Codex CLI (`~/.codex/auth.json`) plus local `~/.codex/sessions` logs | chatgpt.com |
-| **Cursor** | Your signed-in Cursor IDE session (`state.vscdb`), or cursor.com cookies you provide. On-demand is billed spend; plan/included dollars are Cursor internal units, not an invoice. Local Composer tracking (`~/.cursor/ai-tracking`) is activity share, not tokens or spend. | cursor.com |
+| **Cursor** | Your signed-in Cursor IDE session (`state.vscdb`), or cursor.com cookies you provide. On-demand is billed spend; plan/included dollars are Cursor internal units, not an invoice. Grok Bot's weekly allowance, its on-demand spend and The X Subscription's shared weekly pool come from the same cursor.com session. Local Composer tracking (`~/.cursor/ai-tracking`) is activity share, not tokens or spend. | cursor.com |
 | **GitHub Copilot** | Your GitHub CLI / Git Credential Manager token (or a device-flow sign-in) | api.github.com, or your GitHub Enterprise host |
 | **Gemini** | The OAuth token from the Gemini CLI (`~/.gemini/oauth_creds.json`) | Google Code Assist and OAuth endpoints |
 | **Grok** | The OIDC session from Grok Build (`~/.grok/auth.json` via `grok login`), or grok.com cookies you provide; tokens refresh via auth.x.ai; plus local `~/.grok/sessions` logs for tokens / cache / effort / projects / API-equivalent $ (`costUsdTicks`) | grok.com, auth.x.ai |

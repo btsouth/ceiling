@@ -885,6 +885,7 @@ fn window_notify_key(
     window_minutes: Option<u32>,
 ) -> &'static str {
     if provider == ProviderId::Cursor
+        && !matches!(window_minutes, Some(721..=20_160))
         && label.is_some_and(|label| {
             matches!(
                 label.trim().to_ascii_lowercase().as_str(),
@@ -1421,6 +1422,24 @@ mod predictive_warning_tests {
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[1].0, W::Monthly);
         assert_eq!(candidates[1].1.used_percent, 80.0);
+    }
+
+    #[test]
+    fn cursor_lanes_alert_on_their_own_cadence() {
+        for label in ["Plan", "Auto", "API"] {
+            assert_eq!(
+                window_notify_key(ProviderId::Cursor, Some(label), Some(10_080)),
+                "weekly"
+            );
+            assert_eq!(
+                window_notify_key(ProviderId::Cursor, Some(label), Some(44_640)),
+                "monthly"
+            );
+            assert_eq!(
+                window_notify_key(ProviderId::Cursor, Some(label), None),
+                "monthly"
+            );
+        }
     }
 
     #[test]

@@ -335,14 +335,15 @@ export function stripAmountLabel(
 /**
  * Lanes that define a plan alongside its hero, listed in display order and
  * shown on overview however quiet they are:
- *  - Cursor's Auto and API are distinct allowances users need to compare.
+ *  - Cursor's Auto and API are distinct allowances users need to compare, and
+ *    Grok Bot's weekly allowance is separate again when it has been used.
  *  - Claude's Weekly sits beside the 5-hour session; both cap the subscription.
  *    Seats metered only by a monthly spend limit (Enterprise) show that instead.
  *  - OpenCode Go bills against rolling, weekly, and monthly ceilings at once, so
  *    hiding weekly leaves a gap between the two windows that do show.
  */
 const PINNED_COMPANION_IDS: Record<string, string[]> = {
-  cursor: ["secondary", "extra-cursor-api"],
+  cursor: ["secondary", "extra-cursor-api", "extra-cursor-grok-bot"],
   claude: ["secondary", "extra-claude-spend-limit"],
   opencodego: ["secondary", "tertiary"],
 };

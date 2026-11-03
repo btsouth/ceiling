@@ -1,6 +1,7 @@
 //! Cursor API client for fetching usage information
 //!
-//! Uses browser cookies to authenticate with cursor.com API
+//! Uses browser cookies to authenticate with cursor.com API. Plan data comes from
+//! `usage-summary`; Grok Bot and X Subscription data come from `api/dashboard/*`.
 
 #[cfg(test)]
 use crate::core::EnforcementState;
@@ -21,6 +22,14 @@ const ON_DEMAND_PERIOD: &str = "On-demand";
 /// Plan / overall / pooled cents are Cursor internal units, not an invoice.
 const INCLUDED_PERIOD: &str = "Included";
 const NO_USAGE_REPORTED: &str = "No usage reported";
+const API_ID: &str = "cursor-api";
+const API_TITLE: &str = "API";
+const GROK_BOT_ID: &str = "cursor-grok-bot";
+const GROK_BOT_TITLE: &str = "Grok Bot";
+const WEEKLY_MINUTES: u32 = 7 * 24 * 60;
+/// Prepaid credits are what an X Subscription spends past its weekly pool.
+const CREDITS_PERIOD: &str = "Credits";
+const DASHBOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 pub(super) type CursorUsageResult = (UsageSnapshot, Option<CostSnapshot>);
 
@@ -47,15 +56,121 @@ impl CursorApi {
         &self,
         cookie_header: &str,
     ) -> Result<CursorUsageResult, ProviderError> {
-        let (usage_result, user_result) = tokio::join!(
+        let (usage_result, user_result, grok_bot) = tokio::join!(
             self.fetch_usage_summary(cookie_header),
-            self.fetch_user_info(cookie_header)
+            self.fetch_user_info(cookie_header),
+            self.fetch_grok_bot(cookie_header)
         );
 
         let usage_summary = usage_result?;
         let user_info = user_result.ok();
 
-        self.build_result(usage_summary, user_info)
+        let (mut usage, mut cost) = self.build_result(usage_summary, user_info)?;
+        if let Some(reading) = grok_bot {
+            apply_grok_bot(&mut usage, &mut cost, &reading);
+        }
+        Ok((usage, cost))
+    }
+
+    /// Read Grok Bot's meter the same way Grok Bot does. Best effort: Cursor's
+    /// plan data stands on its own, so a failure here only leaves it unchanged.
+    async fn fetch_grok_bot(&self, cookie_header: &str) -> Option<GrokBotReading> {
+        let status: SandUsageStatus = self
+            .dashboard_post(
+                cookie_header,
+                "get-sand-usage-status",
+                serde_json::json!({}),
+            )
+            .await
+            .map_err(|error| tracing::debug!("Cursor Grok Bot status unavailable: {error}"))
+            .ok()?;
+        status.reading()?;
+
+        if status.is_unified {
+            let (period, prepaid) = tokio::join!(
+                self.dashboard_post::<CurrentPeriodUsage>(
+                    cookie_header,
+                    "get-current-period-usage",
+                    serde_json::json!({}),
+                ),
+                self.dashboard_post::<UserPrepaidBilling>(
+                    cookie_header,
+                    "get-user-prepaid-billing",
+                    serde_json::json!({}),
+                ),
+            );
+            return Some(GrokBotReading {
+                status,
+                period: period.ok(),
+                credits_spent_cents: prepaid.ok().and_then(|billing| billing.spent_cents()),
+                on_demand_cents: None,
+            });
+        }
+
+        let on_demand_cents = self.fetch_grok_bot_on_demand_cents(cookie_header).await;
+        Some(GrokBotReading {
+            status,
+            period: None,
+            credits_spent_cents: None,
+            on_demand_cents,
+        })
+    }
+
+    /// Grok Bot's share of on-demand spend this billing month. Grok Bot's own
+    /// usage screen asks for this exact client and product.
+    async fn fetch_grok_bot_on_demand_cents(&self, cookie_header: &str) -> Option<i64> {
+        let cycle: MonthlyBillingCycle = self
+            .dashboard_post(
+                cookie_header,
+                "get-monthly-billing-cycle",
+                serde_json::json!({}),
+            )
+            .await
+            .ok()?;
+        let spend: DailySpendByCategory = self
+            .dashboard_post(
+                cookie_header,
+                "get-daily-spend-by-category",
+                serde_json::json!({
+                    "periodStartMs": cycle.start_date_epoch_millis,
+                    "periodEndMs": cycle.end_date_epoch_millis,
+                    "groupBy": "SPEND_GROUP_BY_CATEGORY_MODEL",
+                    "spendType": "SPEND_TYPE_ON_DEMAND",
+                    "clientType": "grok-bot",
+                    "products": ["sand"],
+                }),
+            )
+            .await
+            .ok()?;
+        Some(spend.total_cents())
+    }
+
+    async fn dashboard_post<T: serde::de::DeserializeOwned>(
+        &self,
+        cookie_header: &str,
+        method: &str,
+        body: serde_json::Value,
+    ) -> Result<T, ProviderError> {
+        let response = self
+            .client
+            .post(format!("{BASE_URL}/api/dashboard/{method}"))
+            .header("Cookie", cookie_header)
+            .header("Origin", BASE_URL)
+            .header("Accept", "application/json")
+            .json(&body)
+            .timeout(DASHBOARD_TIMEOUT)
+            .send()
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(ProviderError::Other(format!(
+                "Cursor {method} returned status {status}"
+            )));
+        }
+        response
+            .json()
+            .await
+            .map_err(|error| ProviderError::Parse(error.to_string()))
     }
 
     pub(super) fn get_cookie_header(&self) -> Result<String, ProviderError> {
@@ -420,6 +535,197 @@ struct UserInfo {
     updated_at: Option<String>,
     #[allow(dead_code)]
     picture: Option<String>,
+}
+
+/// Grok Bot's weekly meter. On The X Subscription it is the whole account's
+/// shared pool; on a Cursor plan it is a separate allowance beside that plan.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct SandUsageStatus {
+    next_reset_timestamp_utc: Option<String>,
+    usage_percent: Option<f64>,
+    uses_pooled_enterprise_allowance: bool,
+    is_unified: bool,
+    cursor_plan_name: Option<String>,
+    billing_brand: Option<String>,
+}
+
+impl SandUsageStatus {
+    /// Pooled enterprise seats have no meter of their own, so Grok Bot itself
+    /// shows no percentage for them.
+    fn reading(&self) -> Option<f64> {
+        if self.uses_pooled_enterprise_allowance {
+            return None;
+        }
+        self.usage_percent
+            .filter(|percent| percent.is_finite() && *percent >= 0.0)
+    }
+
+    fn weekly_window(&self, percent: f64) -> RateWindow {
+        let resets_at = self
+            .next_reset_timestamp_utc
+            .as_deref()
+            .and_then(parse_iso_date);
+        RateWindow::with_details(percent, Some(WEEKLY_MINUTES), resets_at, None)
+    }
+
+    fn unified_plan_label(&self) -> Option<String> {
+        let plan = self.cursor_plan_name.as_deref()?.trim();
+        if plan.is_empty() {
+            return None;
+        }
+        Some(match self.billing_brand.as_deref() {
+            Some("SAND_BILLING_BRAND_GROK") => format!("X {plan}"),
+            _ => format!("Cursor {plan}"),
+        })
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct CurrentPeriodUsage {
+    plan_usage: Option<PeriodPlanUsage>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct PeriodPlanUsage {
+    auto_percent_used: Option<f64>,
+    api_percent_used: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MonthlyBillingCycle {
+    start_date_epoch_millis: String,
+    end_date_epoch_millis: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct DailySpendByCategory {
+    daily_spend: Vec<DailySpend>,
+}
+
+impl DailySpendByCategory {
+    fn total_cents(&self) -> i64 {
+        self.daily_spend.iter().map(|day| day.spend_cents).sum()
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct DailySpend {
+    spend_cents: i64,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+struct UserPrepaidBilling {
+    spent_this_month_cents: Option<String>,
+}
+
+impl UserPrepaidBilling {
+    fn spent_cents(&self) -> Option<i64> {
+        self.spent_this_month_cents.as_deref()?.parse().ok()
+    }
+}
+
+#[derive(Debug)]
+struct GrokBotReading {
+    status: SandUsageStatus,
+    period: Option<CurrentPeriodUsage>,
+    credits_spent_cents: Option<i64>,
+    on_demand_cents: Option<i64>,
+}
+
+fn apply_grok_bot(
+    usage: &mut UsageSnapshot,
+    cost: &mut Option<CostSnapshot>,
+    reading: &GrokBotReading,
+) {
+    let Some(percent) = reading.status.reading() else {
+        return;
+    };
+    if reading.status.is_unified {
+        apply_unified_plan(usage, cost, reading, percent);
+    } else {
+        apply_grok_bot_allowance(usage, reading, percent);
+    }
+}
+
+/// On The X Subscription, Cursor, Grok Bot and the Grok apps draw on one weekly
+/// pool. `usage-summary` still reports a calendar month at 0% for these accounts,
+/// so the weekly reading replaces its plan lanes rather than sitting beside them.
+fn apply_unified_plan(
+    usage: &mut UsageSnapshot,
+    cost: &mut Option<CostSnapshot>,
+    reading: &GrokBotReading,
+    percent: f64,
+) {
+    let status = &reading.status;
+    let plan = reading
+        .period
+        .as_ref()
+        .and_then(|period| period.plan_usage.as_ref());
+
+    usage.primary = status.weekly_window(percent);
+    usage.secondary = plan
+        .and_then(|plan| plan.auto_percent_used)
+        .map(|auto| status.weekly_window(auto));
+    usage
+        .extra_rate_windows
+        .retain(|window| window.id != API_ID);
+    if let Some(api) = plan.and_then(|plan| plan.api_percent_used) {
+        usage.extra_rate_windows.insert(
+            0,
+            NamedRateWindow::new(API_ID, API_TITLE, status.weekly_window(api)),
+        );
+    }
+    usage.inactive_rate_windows.retain(|window| {
+        !matches!(
+            window.id.as_str(),
+            "cursor-plan" | "cursor-monthly" | "cursor-auto" | API_ID
+        )
+    });
+    if let Some(label) = status.unified_plan_label() {
+        usage.login_method = Some(label);
+    }
+
+    // The monthly included figure describes the same stale lanes. Billed
+    // on-demand from usage-summary is still real money, so it stays.
+    if cost
+        .as_ref()
+        .is_some_and(|cost| cost.period == INCLUDED_PERIOD)
+    {
+        *cost = None;
+    }
+    if let Some(cents) = reading.credits_spent_cents.filter(|cents| *cents > 0) {
+        let mut credits = CostSnapshot::new(cents as f64 / 100.0, "USD", CREDITS_PERIOD);
+        if let Some(reset) = usage.primary.resets_at {
+            credits = credits.with_resets_at(reset);
+        }
+        *cost = Some(credits);
+    }
+}
+
+/// On a Cursor plan or a linked Grok subscription, Grok Bot's weekly allowance
+/// is separate from the plan. Untouched allowances stay quiet, since most Cursor
+/// users never run a bot and a permanent 0% row would only be noise.
+fn apply_grok_bot_allowance(usage: &mut UsageSnapshot, reading: &GrokBotReading, percent: f64) {
+    let spent = reading.on_demand_cents.filter(|cents| *cents > 0);
+    if percent <= 0.0 && spent.is_none() {
+        return;
+    }
+    let mut window = NamedRateWindow::new(
+        GROK_BOT_ID,
+        GROK_BOT_TITLE,
+        reading.status.weekly_window(percent),
+    );
+    if let Some(cents) = spent {
+        window = window.with_amount(WindowAmount::new(cents as f64 / 100.0, "USD"));
+    }
+    usage.extra_rate_windows.push(window);
 }
 
 // --- Helper functions ---
@@ -1201,5 +1507,236 @@ mod tests {
         ))
         .expect_err("wrong-typed percent must not become 0%");
         assert!(err.to_string().contains("invalid type"));
+    }
+
+    const UNIFIED_STATUS: &str = r#"{
+        "currentPeriodStart": "2026-10-29T01:33:58.241Z",
+        "nextResetTimestampUtc": "2026-11-05T01:33:58.241Z",
+        "usagePercent": 3.25,
+        "hasAvailableUsage": true,
+        "hasNonZeroIncludedLimit": true,
+        "grokPlanLabel": "Grok Bot Plan",
+        "cursorPlanName": "Premium",
+        "isUnified": true,
+        "billingBrand": "SAND_BILLING_BRAND_GROK"
+    }"#;
+    const UNIFIED_PERIOD: &str = r#"{
+        "billingCycleStart": "1793237638241",
+        "billingCycleEnd": "1793842438241",
+        "planUsage": {"autoPercentUsed": 3.25, "apiPercentUsed": 0, "totalPercentUsed": 3.25},
+        "spendLimitUsage": {"limitType": "user"}
+    }"#;
+    const UNIFIED_SUMMARY: &str = r#"{
+        "billingCycleStart": "2026-11-01T00:00:00.000Z",
+        "billingCycleEnd": "2026-12-01T00:00:00.000Z",
+        "membershipType": "premium",
+        "limitType": "user",
+        "individualUsage": {
+            "plan": {"enabled": true, "used": 0, "limit": 4615, "autoPercentUsed": 0,
+                     "apiPercentUsed": 0, "totalPercentUsed": 0},
+            "onDemand": {"enabled": false, "used": 0, "limit": null, "remaining": null}
+        }
+    }"#;
+    const LEGACY_STATUS: &str = r#"{
+        "nextResetTimestampUtc": "2026-11-05T01:33:58.241Z",
+        "usagePercent": 43.0,
+        "hasNonZeroIncludedLimit": true,
+        "grokPlanLabel": "Grok Bot Plan"
+    }"#;
+    const LEGACY_SUMMARY: &str = r#"{
+        "billingCycleStart": "2026-11-01T00:00:00.000Z",
+        "billingCycleEnd": "2026-12-01T00:00:00.000Z",
+        "membershipType": "ultra",
+        "individualUsage": {
+            "plan": {"used": 800, "limit": 5000, "autoPercentUsed": 20.0,
+                     "apiPercentUsed": 10.0, "totalPercentUsed": 16.0},
+            "onDemand": {"enabled": true, "used": 350, "limit": 1000}
+        }
+    }"#;
+
+    fn status(json: &str) -> SandUsageStatus {
+        serde_json::from_str(json).unwrap()
+    }
+
+    fn with_grok_bot(summary: &str, reading: GrokBotReading) -> CursorUsageResult {
+        let (mut usage, mut cost) = api().build_result(parse_summary(summary), None).unwrap();
+        apply_grok_bot(&mut usage, &mut cost, &reading);
+        (usage, cost)
+    }
+
+    fn unified_reading(period: Option<&str>, credits_spent_cents: Option<i64>) -> GrokBotReading {
+        GrokBotReading {
+            status: status(UNIFIED_STATUS),
+            period: period.map(|json| serde_json::from_str(json).unwrap()),
+            credits_spent_cents,
+            on_demand_cents: None,
+        }
+    }
+
+    fn legacy_reading(json: &str, on_demand_cents: Option<i64>) -> GrokBotReading {
+        GrokBotReading {
+            status: status(json),
+            period: None,
+            credits_spent_cents: None,
+            on_demand_cents,
+        }
+    }
+
+    fn has_extra(usage: &UsageSnapshot, id: &str) -> bool {
+        usage
+            .extra_rate_windows
+            .iter()
+            .any(|window| window.id == id)
+    }
+
+    #[test]
+    fn unified_plan_replaces_the_stale_monthly_lanes_with_the_weekly_pool() {
+        let (usage, cost) =
+            with_grok_bot(UNIFIED_SUMMARY, unified_reading(Some(UNIFIED_PERIOD), None));
+
+        assert_eq!(usage.primary.used_percent, 3.25);
+        assert_eq!(usage.primary.window_minutes, Some(WEEKLY_MINUTES));
+        assert_eq!(
+            usage.primary.resets_at,
+            parse_iso_date("2026-11-05T01:33:58.241Z")
+        );
+        let auto = usage.secondary.as_ref().expect("auto lane");
+        assert_eq!(auto.used_percent, 3.25);
+        assert_eq!(auto.window_minutes, Some(WEEKLY_MINUTES));
+        let api_lane = extra(&usage, API_ID);
+        assert_eq!(api_lane.window.used_percent, 0.0);
+        assert_eq!(api_lane.window.window_minutes, Some(WEEKLY_MINUTES));
+        assert_eq!(
+            usage
+                .extra_rate_windows
+                .iter()
+                .filter(|window| window.id == API_ID)
+                .count(),
+            1
+        );
+        assert!(
+            !has_extra(&usage, GROK_BOT_ID),
+            "the pool already includes it"
+        );
+        assert_eq!(usage.login_method.as_deref(), Some("X Premium"));
+        assert!(
+            cost.is_none(),
+            "the monthly included figure is stale: {cost:?}"
+        );
+    }
+
+    #[test]
+    fn unified_plan_without_period_data_drops_lanes_it_cannot_trust() {
+        let (usage, _) = with_grok_bot(LEGACY_SUMMARY, unified_reading(None, None));
+
+        assert_eq!(usage.primary.used_percent, 3.25);
+        assert!(usage.secondary.is_none());
+        assert!(!has_extra(&usage, API_ID));
+        assert!(has_extra(&usage, ON_DEMAND_ID), "billed on-demand stays");
+    }
+
+    #[test]
+    fn unified_plan_reports_credits_spent_past_the_pool() {
+        let (_, cost) = with_grok_bot(
+            UNIFIED_SUMMARY,
+            unified_reading(Some(UNIFIED_PERIOD), Some(1250)),
+        );
+
+        let cost = cost.expect("credits");
+        assert_eq!(cost.used, 12.5);
+        assert_eq!(cost.period, CREDITS_PERIOD);
+    }
+
+    #[test]
+    fn unified_plan_clears_a_placeholder_plan_row() {
+        let (usage, _) = with_grok_bot(
+            r#"{"membershipType": "premium"}"#,
+            unified_reading(None, None),
+        );
+
+        assert_eq!(usage.primary.used_percent, 3.25);
+        assert!(usage.inactive_rate_windows.is_empty());
+    }
+
+    #[test]
+    fn cursor_plan_keeps_its_lanes_and_gains_a_grok_bot_row() {
+        let (baseline, baseline_cost) = api()
+            .build_result(parse_summary(LEGACY_SUMMARY), None)
+            .unwrap();
+        let (usage, cost) =
+            with_grok_bot(LEGACY_SUMMARY, legacy_reading(LEGACY_STATUS, Some(1234)));
+
+        assert_eq!(usage.primary.used_percent, baseline.primary.used_percent);
+        assert_eq!(
+            usage.primary.window_minutes,
+            baseline.primary.window_minutes
+        );
+        assert_eq!(usage.login_method, baseline.login_method);
+        assert!(usage.secondary.is_some());
+        assert_eq!(
+            cost.map(|cost| cost.used),
+            baseline_cost.map(|cost| cost.used)
+        );
+
+        let row = extra(&usage, GROK_BOT_ID);
+        assert_eq!(row.title, GROK_BOT_TITLE);
+        assert_eq!(row.window.used_percent, 43.0);
+        assert_eq!(row.window.window_minutes, Some(WEEKLY_MINUTES));
+        assert_eq!(row.amount.as_ref().map(|amount| amount.used), Some(12.34));
+    }
+
+    #[test]
+    fn untouched_grok_bot_allowance_stays_quiet() {
+        let idle = r#"{"usagePercent": 0, "hasNonZeroIncludedLimit": true}"#;
+        let (usage, _) = with_grok_bot(LEGACY_SUMMARY, legacy_reading(idle, Some(0)));
+        assert!(!has_extra(&usage, GROK_BOT_ID));
+
+        let (usage, _) = with_grok_bot(LEGACY_SUMMARY, legacy_reading(idle, Some(500)));
+        assert_eq!(extra(&usage, GROK_BOT_ID).window.used_percent, 0.0);
+    }
+
+    #[test]
+    fn pooled_or_missing_grok_bot_readings_change_nothing() {
+        let baseline = api()
+            .build_result(parse_summary(LEGACY_SUMMARY), None)
+            .unwrap()
+            .0;
+        for json in [
+            r#"{"usagePercent": 40, "usesPooledEnterpriseAllowance": true}"#,
+            r#"{"hasNonZeroIncludedLimit": false}"#,
+            r#"{}"#,
+            r#"{"usagePercent": -1}"#,
+        ] {
+            let (usage, _) = with_grok_bot(LEGACY_SUMMARY, legacy_reading(json, Some(900)));
+            assert!(!has_extra(&usage, GROK_BOT_ID), "{json}");
+            assert_eq!(usage.primary.used_percent, baseline.primary.used_percent);
+        }
+    }
+
+    #[test]
+    fn grok_bot_spend_sums_every_day_and_tolerates_zero_days() {
+        let spend: DailySpendByCategory = serde_json::from_str(
+            r#"{"dailySpend": [
+                {"day": "1", "category": "grok-bot-default", "spendCents": 700, "totalTokens": "5"},
+                {"day": "2", "category": "grok-bot-automation", "totalTokens": "9"},
+                {"day": "3", "category": "grok-bot-default", "spendCents": 34}
+            ], "categories": ["grok-bot-default"]}"#,
+        )
+        .unwrap();
+        assert_eq!(spend.total_cents(), 734);
+        assert_eq!(
+            serde_json::from_str::<DailySpendByCategory>("{}")
+                .unwrap()
+                .total_cents(),
+            0
+        );
+    }
+
+    #[test]
+    fn prepaid_cents_arrive_as_a_string() {
+        let billing: UserPrepaidBilling =
+            serde_json::from_str(r#"{"spentThisMonthCents": "1250"}"#).unwrap();
+        assert_eq!(billing.spent_cents(), Some(1250));
+        assert_eq!(UserPrepaidBilling::default().spent_cents(), None);
     }
 }

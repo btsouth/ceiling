@@ -129,6 +129,7 @@ function flyoutWindows(provider: ProviderUsageSnapshot): ConstrainingWindow[] {
     "primary",
     "secondary",
     "extra-cursor-api",
+    "extra-cursor-grok-bot",
     "extra-cursor-on-demand",
   ];
   const preferred = preferredIds
@@ -137,9 +138,11 @@ function flyoutWindows(provider: ProviderUsageSnapshot): ConstrainingWindow[] {
   const remaining = windows.filter(
     (window) => !preferred.some((candidate) => candidate.id === window.id),
   );
+  // Grok Bot's row is an extra allowance, so it must not cost On-demand its slot.
+  const grokBot = preferred.some((window) => window.id === "extra-cursor-grok-bot");
   return [...preferred, ...remaining, ...named].slice(
     0,
-    MAX_VISIBLE_WINDOWS_PER_PROVIDER,
+    MAX_VISIBLE_WINDOWS_PER_PROVIDER + (grokBot ? 1 : 0),
   );
 }
 
