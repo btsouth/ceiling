@@ -203,10 +203,15 @@ pub(crate) fn pace_stage_str(stage: codexbar::core::PaceStage) -> &'static str {
 /// weekly-cadence window in the primary slot therefore uses the weekly label;
 /// session cadence, monthly plans, and unknown cadence keep the configured one.
 fn primary_window_label<'a>(
+    provider: ProviderId,
     session_label: &'a str,
     weekly_label: &'a str,
     window_minutes: Option<u32>,
 ) -> &'a str {
+    // Cursor's weekly label names its Auto lane, so a weekly plan is still "Plan".
+    if provider == ProviderId::Cursor {
+        return session_label;
+    }
     match window_minutes {
         Some(m) if m > 720 && m <= 20_160 => weekly_label,
         _ => session_label,
@@ -282,6 +287,7 @@ impl ProviderUsageSnapshot {
     ) -> Self {
         let usage = &result.usage;
         let primary_label = primary_window_label(
+            id,
             metadata.session_label,
             metadata.weekly_label,
             usage.primary.window_minutes,
@@ -620,6 +626,10 @@ pub(crate) fn friendly_provider_error(id: ProviderId, error: &str) -> String {
         );
     }
 
+    if let Some(guidance) = trimmed.strip_prefix("OAuth error: Claude Desktop") {
+        return format!("Claude Desktop{guidance}");
+    }
+
     if lower.contains("claude oauth credentials not found") {
         return format!(
             "Claude CLI sign-in was not found. Run `claude` once in a terminal, then refresh Claude in Ceiling. {CLAUDE_CHARTS_WITHOUT_CAPACITY_NOTE}"
@@ -928,21 +938,39 @@ mod tests {
     /// slot (Codex when the 5-hour is lifted) must read as the weekly, not the
     /// session — otherwise a full week's budget looks like a 5-hour cap.
     #[test]
+    fn cursor_plan_keeps_its_name_on_a_weekly_cadence() {
+        assert_eq!(
+            primary_window_label(ProviderId::Cursor, "Plan", "Auto", Some(10_080)),
+            "Plan"
+        );
+        assert_eq!(
+            primary_window_label(ProviderId::Cursor, "Plan", "Auto", Some(44_640)),
+            "Plan"
+        );
+    }
+
+    #[test]
     fn primary_label_follows_window_cadence() {
         // Codex normal: 5-hour present.
         assert_eq!(
-            primary_window_label("Session", "Weekly", Some(300)),
+            primary_window_label(ProviderId::Codex, "Session", "Weekly", Some(300)),
             "Session"
         );
         // Codex 5-hour lifted: weekly promoted into primary.
         assert_eq!(
-            primary_window_label("Session", "Weekly", Some(10_080)),
+            primary_window_label(ProviderId::Codex, "Session", "Weekly", Some(10_080)),
             "Weekly"
         );
         // Cursor's monthly plan keeps its configured label.
-        assert_eq!(primary_window_label("Plan", "Weekly", Some(43_200)), "Plan");
+        assert_eq!(
+            primary_window_label(ProviderId::Codex, "Plan", "Weekly", Some(43_200)),
+            "Plan"
+        );
         // Unknown cadence keeps the configured label.
-        assert_eq!(primary_window_label("Session", "Weekly", None), "Session");
+        assert_eq!(
+            primary_window_label(ProviderId::Codex, "Session", "Weekly", None),
+            "Session"
+        );
     }
 
     /// Build a window that is `elapsed_fraction` of the way through its period,

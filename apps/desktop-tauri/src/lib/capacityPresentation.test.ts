@@ -352,6 +352,27 @@ describe("capacityPresentation", () => {
     ]);
   });
 
+  it("shows Cursor's Grok Bot allowance as a companion when it is reported", () => {
+    const meters = glanceMeters(
+      provider({
+        primary: window(62),
+        primaryLabel: "Plan",
+        secondary: window(90),
+        secondaryLabel: "Auto",
+        extraRateWindows: [
+          { id: "cursor-api", title: "API", window: window(12) },
+          { id: "cursor-grok-bot", title: "Grok Bot", window: window(43) },
+        ],
+      }),
+    );
+    expect(meters.primary?.window.usedPercent).toBe(62);
+    expect(meters.companions.map((meter) => meter.label)).toEqual([
+      "Auto",
+      "API",
+      "Grok Bot",
+    ]);
+  });
+
   it("keeps Cursor companion order stable when API is hotter than Auto", () => {
     const meters = glanceMeters(
       provider({

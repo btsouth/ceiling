@@ -179,16 +179,22 @@ fn load_from_file(config_dir: Option<&Path>) -> Result<ClaudeOAuthCredentials, P
     parse_credentials_json(&content)
 }
 
-pub(super) fn credentials_file_available(config_dir: Option<&Path>) -> bool {
-    load_from_file(config_dir).is_ok()
+/// Whether Claude Code has a credential saved for this directory, readable or
+/// not. A file caught mid-rotation or corrupt still means Claude Code is signed
+/// in, so it must surface as that account's own state and not as signed out.
+pub(super) fn claude_code_credentials_present(config_dir: Option<&Path>) -> bool {
+    let is_explicit = is_explicit_account(config_dir);
+    if !is_explicit && load_from_environment().is_some() {
+        return true;
+    }
+    if credentials_path(config_dir).is_ok_and(|path| path.exists()) {
+        return true;
+    }
+    !is_explicit && !matches!(load_from_keyring(), Ok(None))
 }
 
-/// Whether `config_dir` has no credentials at all: no credentials file, and
-/// nothing in the fallback stores `load_credentials` consults for it. A file
-/// that exists but is unreadable, malformed, or expired does not count.
-pub(super) fn credentials_missing(config_dir: &Path) -> bool {
-    !crate::core::claude_credentials_path(config_dir).exists()
-        && load_credentials(Some(config_dir)).is_err()
+pub(super) fn credentials_file_available(config_dir: Option<&Path>) -> bool {
+    load_from_file(config_dir).is_ok()
 }
 
 /// Load credentials from Claude Code's OS keychain / credential manager entry.
@@ -632,6 +638,18 @@ mod tests {
         )
         .unwrap();
         path
+    }
+
+    #[test]
+    fn a_saved_credential_means_signed_in_even_when_unreadable() {
+        use super::{claude_code_credentials_present, credentials_file_available};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(!claude_code_credentials_present(Some(dir.path())));
+
+        std::fs::write(dir.path().join(".credentials.json"), "{ not json").expect("write");
+        assert!(claude_code_credentials_present(Some(dir.path())));
+        assert!(!credentials_file_available(Some(dir.path())));
     }
 
     #[test]

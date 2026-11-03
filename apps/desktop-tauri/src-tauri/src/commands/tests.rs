@@ -1378,6 +1378,19 @@ fn claude_error_message_removes_upstream_swift_cancellation() {
 }
 
 #[test]
+fn claude_error_message_shows_desktop_guidance_as_written() {
+    let message = super::friendly_provider_error(
+        ProviderId::Claude,
+        "OAuth error: Claude Desktop has no current sign-in. Open Claude Desktop and sign in, or run `claude` to use Claude Code.",
+    );
+
+    assert_eq!(
+        message,
+        "Claude Desktop has no current sign-in. Open Claude Desktop and sign in, or run `claude` to use Claude Code."
+    );
+}
+
+#[test]
 fn claude_error_message_explains_missing_sign_in() {
     let message = super::friendly_provider_error(
         ProviderId::Claude,
