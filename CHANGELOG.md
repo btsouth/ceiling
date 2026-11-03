@@ -2,6 +2,10 @@
 
 ## [Ceiling] Unreleased
 
+## [Ceiling] 1.5.48 - 2026-11-02
+
+Claude usage works if you only use Claude Desktop, with the app open or closed.
+
 ### Fixed
 - **Claude works if you only use Claude Desktop.** With Claude Code signed out, the Claude card showed an error, and reading the Desktop session meant closing the app first. Ceiling now reads usage with Claude Desktop's own sign-in, with the app open or closed and no setting to change. It applies only to the default `~/.claude` account, and never when that card or another one belongs to a different seat. Ceiling never refreshes or changes the Desktop sign-in. Thanks to @jayn2u.
 
