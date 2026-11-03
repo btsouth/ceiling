@@ -2,6 +2,12 @@
 
 ## [Ceiling] Unreleased
 
+### Added
+- **Cursor shows Grok Bot usage.** On a Cursor plan or a linked Grok subscription, Grok Bot has its own weekly allowance. Once it has been used, it appears as a Grok Bot row beside Plan, Auto and API, with its on-demand spend for the billing month. Closes #524.
+
+### Fixed
+- **Cursor reads the right meter on The X Subscription.** These accounts share one weekly pool across Cursor, Grok Bot and the Grok apps, but Cursor's monthly summary reports 0% for them, so Ceiling showed an empty plan with the wrong reset. The Cursor card now shows the weekly pool, its reset, the X plan name and any prepaid credits spent.
+
 ## [Ceiling] 1.5.46 - 2026-10-26
 
 Claude Enterprise seats show their monthly spend, and the dashboard and taskbar flyout follow the Windows theme.

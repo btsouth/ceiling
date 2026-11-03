@@ -273,6 +273,45 @@ describe("TaskbarFlyout", () => {
     expect(screen.queryByText("Promotional")).not.toBeInTheDocument();
   });
 
+  it("adds Cursor's Grok Bot row without displacing On-demand", () => {
+    const cursor = provider("cursor", "Cursor", 85, 22 * 24 * 60, "Plan");
+    cursor.secondary = { ...cursor.primary, usedPercent: 40, remainingPercent: 60 };
+    cursor.secondaryLabel = "Auto";
+    cursor.extraRateWindows = [
+      {
+        id: "cursor-api",
+        title: "API",
+        window: { ...cursor.primary, usedPercent: 38, remainingPercent: 62 },
+      },
+      {
+        id: "cursor-grok-bot",
+        title: "Grok Bot",
+        window: { ...cursor.primary, usedPercent: 43, remainingPercent: 57 },
+      },
+      {
+        id: "cursor-on-demand",
+        title: "On-demand",
+        window: { ...cursor.primary, usedPercent: 12, remainingPercent: 88 },
+      },
+    ];
+    providerState.providers = [cursor];
+    const cursorState = {
+      ...state,
+      providers: [{ id: "cursor", displayName: "Cursor" }],
+      settings: {
+        ...state.settings,
+        enabledProviders: ["cursor"],
+        providerOrder: ["cursor"],
+      },
+    } as BootstrapState;
+
+    render(<TaskbarFlyout state={cursorState} />);
+
+    expect(screen.getByRole("progressbar", { name: "Cursor Grok Bot 43%" })).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Cursor On-demand 12%" })).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "Cursor Plan 85%" })).toBeInTheDocument();
+  });
+
   it("keeps the On-demand lane and its spend when every Cursor allowance is depleted", async () => {
     // SBS-191: the reporter's exact state — Plan/Auto/API all at 100%, real
     // money accruing on-demand. The flyout used to drop the row by name, so the
