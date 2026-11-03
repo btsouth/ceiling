@@ -785,7 +785,10 @@ mod tests {
 
     #[test]
     fn decrypts_a_chromium_secret_and_rejects_tampering() {
-        let key = [7u8; 32];
+        let key: Vec<u8> = [uuid::Uuid::new_v4(), uuid::Uuid::new_v4()]
+            .iter()
+            .flat_map(|id| *id.as_bytes())
+            .collect();
         let nonce = [9u8; 12];
         let cipher = Aes256Gcm::new_from_slice(&key).unwrap();
         let sealed = cipher
