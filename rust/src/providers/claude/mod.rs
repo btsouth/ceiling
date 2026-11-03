@@ -672,7 +672,14 @@ impl ClaudeProvider {
                 {
                     return result;
                 }
-                self.oauth_fetcher.scoped(dir.to_path_buf()).fetch().await
+                let result = self.oauth_fetcher.scoped(dir.to_path_buf()).fetch().await;
+                let missing = result.is_err()
+                    && !is_default_account(
+                        dir,
+                        crate::core::ambient_claude_config_dir().as_deref(),
+                    )
+                    && !oauth::claude_code_signed_in(Some(dir));
+                result.map_err(|error| scoped_oauth_error(dir, error, missing))
             }
             ClaudeOAuthSource::AccessToken(token) => {
                 self.oauth_fetcher.fetch_with_access_token(token).await
@@ -937,6 +944,25 @@ fn claude_auto_fetch_error(failures: Vec<(&'static str, ProviderError)>) -> Prov
 
     ProviderError::Other(format!(
         "Claude usage failed from all configured sources. {summary}"
+    ))
+}
+
+/// Only the default directory's card can use the Claude Desktop sign-in, so any
+/// other directory without credentials needs to say so and name the ways out.
+/// Any other failure (expired token, network) keeps its own message.
+fn scoped_oauth_error(
+    dir: &std::path::Path,
+    error: ProviderError,
+    credentials_missing: bool,
+) -> ProviderError {
+    if !credentials_missing {
+        return error;
+    }
+    // Keep this free of "Claude OAuth credentials not found": the desktop
+    // bridge rewrites that phrase into a generic sign-in hint.
+    ProviderError::OAuth(format!(
+        "No Claude Code sign-in found in {}. Only the default Claude card can use the Claude Desktop sign-in. To fix this, run `claude` with CLAUDE_CONFIG_DIR set to that directory and sign in, or remove the account in Ceiling.",
+        dir.display()
     ))
 }
 
@@ -1850,6 +1876,68 @@ Resets Dec 24 at 3:59pm (Europe/Paris)
         assert_eq!(
             err.to_string(),
             "Claude usage failed from all configured sources. OAuth: OAuth error: token expired; Web: No cookies available for web API; CLI: Parse error: Empty output from Claude CLI"
+        );
+    }
+
+    #[test]
+    fn scoped_missing_credentials_error_explains_desktop_session_skip() {
+        let dir = std::path::Path::new(r"C:\Users\person\.claude-work");
+        let err = scoped_oauth_error(
+            dir,
+            ProviderError::OAuth("credentials not found".to_string()),
+            true,
+        );
+
+        assert!(matches!(err, ProviderError::OAuth(_)));
+        let message = err.to_string();
+        assert_eq!(
+            message,
+            format!(
+                "OAuth error: No Claude Code sign-in found in {}. Only the default Claude card can use the Claude Desktop sign-in. To fix this, run `claude` with CLAUDE_CONFIG_DIR set to that directory and sign in, or remove the account in Ceiling.",
+                dir.display()
+            )
+        );
+        let lower = message.to_lowercase();
+        assert!(
+            !lower.contains("claude oauth credentials not found"),
+            "the desktop bridge would replace this message with a generic hint"
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_directory_without_credentials_names_the_directory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = FetchContext {
+            account_config_dir: Some(dir.path().to_path_buf()),
+            ..FetchContext::default()
+        };
+
+        let err = ClaudeProvider::new()
+            .fetch_via_auto(&ctx)
+            .await
+            .expect_err("a directory with no credentials cannot fetch");
+
+        assert!(
+            err.to_string().contains(&format!(
+                "No Claude Code sign-in found in {}.",
+                dir.path().display()
+            )),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn scoped_oauth_error_keeps_other_failures() {
+        let dir = std::path::Path::new(r"C:\Users\person\.claude-work");
+        let err = scoped_oauth_error(
+            dir,
+            ProviderError::OAuth("OAuth token expired. Run `claude` to refresh.".to_string()),
+            false,
+        );
+
+        assert_eq!(
+            err.to_string(),
+            "OAuth error: OAuth token expired. Run `claude` to refresh."
         );
     }
 

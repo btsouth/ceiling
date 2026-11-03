@@ -1391,6 +1391,19 @@ fn claude_error_message_shows_desktop_guidance_as_written() {
 }
 
 #[test]
+fn claude_error_message_shows_directory_guidance_as_written() {
+    let message = super::friendly_provider_error(
+        ProviderId::Claude,
+        "OAuth error: No Claude Code sign-in found in C:\\Users\\person\\.claude-work. Only the default Claude card can use the Claude Desktop sign-in.",
+    );
+
+    assert_eq!(
+        message,
+        "No Claude Code sign-in found in C:\\Users\\person\\.claude-work. Only the default Claude card can use the Claude Desktop sign-in."
+    );
+}
+
+#[test]
 fn claude_error_message_explains_missing_sign_in() {
     let message = super::friendly_provider_error(
         ProviderId::Claude,
