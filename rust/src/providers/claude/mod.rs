@@ -84,11 +84,12 @@ fn claude_oauth_source(ctx: &FetchContext) -> ClaudeOAuthSource<'_> {
 
 /// The default directory's card may use Claude Desktop's sign-in when Claude
 /// Code is signed out there and nothing else was asked for: a token, a session
-/// key, or OAuth only, which is also what turning browser sessions off selects.
+/// key, or a source other than Auto and Web. Turning browser sessions off selects
+/// OAuth or keeps CLI, whose fallback also lands here, so both must stay out.
 /// Other configured directories stay on their own credentials (SBS-1034).
 fn default_card_may_use_desktop(ctx: &FetchContext, dir: &std::path::Path) -> bool {
     cfg!(windows)
-        && ctx.source_mode != SourceMode::OAuth
+        && source_may_use_desktop(ctx.source_mode)
         && ctx
             .api_key
             .as_deref()
@@ -96,6 +97,10 @@ fn default_card_may_use_desktop(ctx: &FetchContext, dir: &std::path::Path) -> bo
         && is_default_account(dir, crate::core::ambient_claude_config_dir().as_deref())
         && !ClaudeWebApiFetcher::has_session_key_in_env()
         && !oauth::claude_code_signed_in(Some(dir))
+}
+
+fn source_may_use_desktop(mode: SourceMode) -> bool {
+    matches!(mode, SourceMode::Auto | SourceMode::Web)
 }
 
 fn is_default_account(dir: &std::path::Path, default_dir: Option<&std::path::Path>) -> bool {
@@ -1283,6 +1288,14 @@ mod tests {
     use chrono::{DateTime, Utc};
 
     use super::*;
+
+    #[test]
+    fn only_auto_and_web_sources_can_use_the_desktop_session() {
+        assert!(source_may_use_desktop(SourceMode::Auto));
+        assert!(source_may_use_desktop(SourceMode::Web));
+        assert!(!source_may_use_desktop(SourceMode::OAuth));
+        assert!(!source_may_use_desktop(SourceMode::Cli));
+    }
 
     #[test]
     fn desktop_account_never_shows_as_another_seat() {
