@@ -2,6 +2,7 @@
 
 mod admin_api;
 mod cli_reset;
+mod desktop_token;
 mod oauth;
 mod scoped_weekly;
 mod usage_api;
@@ -79,6 +80,62 @@ fn claude_oauth_source(ctx: &FetchContext) -> ClaudeOAuthSource<'_> {
         Some(token) => ClaudeOAuthSource::AccessToken(token),
         None => ClaudeOAuthSource::Ambient,
     }
+}
+
+/// The default directory's card may use Claude Desktop's sign-in when Claude
+/// Code is signed out there and nothing else was asked for: a token, a session
+/// key, or OAuth only, which is also what turning browser sessions off selects.
+/// Other configured directories stay on their own credentials (SBS-1034).
+fn default_card_may_use_desktop(ctx: &FetchContext, dir: &std::path::Path) -> bool {
+    cfg!(windows)
+        && ctx.source_mode != SourceMode::OAuth
+        && ctx
+            .api_key
+            .as_deref()
+            .is_none_or(|token| token.trim().is_empty())
+        && is_default_account(dir, crate::core::ambient_claude_config_dir().as_deref())
+        && !ClaudeWebApiFetcher::has_session_key_in_env()
+        && !oauth::claude_code_signed_in(Some(dir))
+}
+
+fn is_default_account(dir: &std::path::Path, default_dir: Option<&std::path::Path>) -> bool {
+    default_dir.is_some_and(|default| crate::core::same_dir(default, dir))
+}
+
+/// Each configured directory and the account last known to be signed in there.
+fn configured_account_uuids() -> Option<Vec<(std::path::PathBuf, Option<String>)>> {
+    use crate::core::AccountIdentity;
+    let data = crate::core::ClaudeAccountStore::new().load().ok()?;
+    Some(
+        data.accounts
+            .into_iter()
+            .map(|account| {
+                let uuid = crate::core::ClaudeIdentity::read(&account.config_dir)
+                    .and_then(|identity| identity.account_uuid)
+                    .or_else(|| account.identity.and_then(|identity| identity.account_uuid));
+                (account.config_dir, uuid)
+            })
+            .collect(),
+    )
+}
+
+/// Desktop's account fits the default card unless the card is known to be a
+/// different account, or another card already shows that seat.
+fn desktop_account_fits_default_card(
+    desktop_account: &str,
+    default_dir: &std::path::Path,
+    accounts: &[(std::path::PathBuf, Option<String>)],
+) -> bool {
+    accounts.iter().all(|(dir, uuid)| {
+        let is_desktop_account = uuid
+            .as_deref()
+            .map(|uuid| uuid.eq_ignore_ascii_case(desktop_account));
+        if crate::core::same_dir(dir, default_dir) {
+            is_desktop_account != Some(false)
+        } else {
+            is_desktop_account != Some(true)
+        }
+    })
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -542,10 +599,11 @@ impl ClaudeProvider {
         ctx: &FetchContext,
     ) -> Result<ProviderFetchResult, ProviderError> {
         // A configured account is a promise that this reading belongs to one
-        // specific CLAUDE_CONFIG_DIR. Global sources such as Claude Desktop,
-        // browser cookies, environment tokens, and an ambient CLI session have
-        // no account identity attached, so consulting them here can render the
-        // same seat under every configured account card.
+        // specific CLAUDE_CONFIG_DIR. Global sources such as browser cookies,
+        // environment tokens, and an ambient CLI session have no account identity
+        // attached, so consulting them here can render the same seat under every
+        // configured account card. `fetch_via_oauth` makes the one exception,
+        // for the default directory when Claude Code is signed out there.
         if claude_auto_policy(ctx) == ClaudeAutoPolicy::ScopedOAuthOnly {
             tracing::debug!(
                 config_dir = ?ctx.account_config_dir,
@@ -604,6 +662,11 @@ impl ClaudeProvider {
         // identity or usage into another configured account card.
         match claude_oauth_source(ctx) {
             ClaudeOAuthSource::Scoped(dir) => {
+                if default_card_may_use_desktop(ctx, dir)
+                    && let Some(result) = self.fetch_default_card_via_desktop(dir).await
+                {
+                    return result;
+                }
                 self.oauth_fetcher.scoped(dir.to_path_buf()).fetch().await
             }
             ClaudeOAuthSource::AccessToken(token) => {
@@ -611,6 +674,49 @@ impl ClaudeProvider {
             }
             ClaudeOAuthSource::Ambient => self.oauth_fetcher.fetch().await,
         }
+    }
+
+    /// `None` when Desktop has no usable token on this machine.
+    async fn fetch_via_desktop_token(&self) -> Option<Result<ProviderFetchResult, ProviderError>> {
+        let token = desktop_token::load_desktop_token()?;
+        tracing::debug!("Using Claude Desktop's token for usage fetch");
+        Some(
+            self.oauth_fetcher
+                .fetch_with_desktop_credentials(token.credentials)
+                .await,
+        )
+    }
+
+    /// `None` when Desktop has never signed in here, which leaves the card's own
+    /// "sign in to Claude Code" error as the right answer.
+    async fn fetch_default_card_via_desktop(
+        &self,
+        dir: &std::path::Path,
+    ) -> Option<Result<ProviderFetchResult, ProviderError>> {
+        let Some(token) = desktop_token::load_desktop_token() else {
+            return desktop_token::has_saved_sign_in().then(|| {
+                Err(ProviderError::OAuth(
+                    "Claude Desktop has no current sign-in. Open Claude Desktop and sign in, or run `claude` to use Claude Code."
+                        .to_string(),
+                ))
+            });
+        };
+        let fits = configured_account_uuids().is_some_and(|accounts| {
+            desktop_account_fits_default_card(&token.account_uuid, dir, &accounts)
+        });
+        if !fits {
+            tracing::debug!("Claude Desktop's account does not fit the default Claude card");
+            return Some(Err(ProviderError::OAuth(
+                "Claude Desktop is signed in to a different account than this card. Run `claude` to sign this account in to Claude Code."
+                    .to_string(),
+            )));
+        }
+        tracing::debug!("Using Claude Desktop's token for the default Claude card");
+        Some(
+            self.oauth_fetcher
+                .fetch_with_desktop_credentials(token.credentials)
+                .await,
+        )
     }
 
     async fn fetch_via_admin_api(
@@ -645,7 +751,24 @@ impl ClaudeProvider {
                     .fetch_with_cookie_header(cookie_header)
                     .await
             }
-            ClaudeWebSource::Ambient => self.web_fetcher.fetch_with_cookies().await,
+            ClaudeWebSource::Ambient => {
+                // Without Claude Code, a session key or a token you set, prefer
+                // Desktop's token: it works while the cookie database is locked.
+                if cfg!(windows)
+                    && claude_oauth_source(ctx) == ClaudeOAuthSource::Ambient
+                    && !ClaudeWebApiFetcher::has_session_key_in_env()
+                    && !oauth::claude_code_signed_in(None)
+                {
+                    match self.fetch_via_desktop_token().await {
+                        Some(Ok(result)) => return Ok(result),
+                        Some(Err(error)) => {
+                            tracing::debug!("Claude Desktop token fetch failed: {error}");
+                        }
+                        None => {}
+                    }
+                }
+                self.web_fetcher.fetch_with_cookies().await
+            }
         }
     }
 
@@ -1160,6 +1283,51 @@ mod tests {
     use chrono::{DateTime, Utc};
 
     use super::*;
+
+    #[test]
+    fn desktop_account_never_shows_as_another_seat() {
+        let default = std::path::PathBuf::from("/home/person/.claude");
+        let other = std::path::PathBuf::from("/home/person/.claude-work");
+        let fits = |accounts: &[(std::path::PathBuf, Option<String>)]| {
+            desktop_account_fits_default_card("DESKTOP", &default, accounts)
+        };
+        let uuid = |value: &str| Some(value.to_string());
+
+        // The reporter's setup: one signed-out default card, identity known or not.
+        assert!(fits(&[(default.clone(), None)]));
+        assert!(fits(&[(default.clone(), uuid("desktop"))]));
+
+        // The card belongs to someone else.
+        assert!(!fits(&[(default.clone(), uuid("other"))]));
+
+        // Another card already shows Desktop's seat.
+        assert!(!fits(&[
+            (default.clone(), None),
+            (other.clone(), uuid("DESKTOP"))
+        ]));
+
+        // Another card shows a different seat, or an unknown one.
+        assert!(fits(&[
+            (default.clone(), None),
+            (other.clone(), uuid("work"))
+        ]));
+        assert!(fits(&[(default.clone(), None), (other, None)]));
+    }
+
+    #[test]
+    fn only_the_default_directory_can_use_the_desktop_session() {
+        let default = std::path::Path::new("/home/person/.claude");
+
+        assert!(is_default_account(
+            std::path::Path::new("/home/person/.claude/"),
+            Some(default)
+        ));
+        assert!(!is_default_account(
+            std::path::Path::new("/home/person/.claude-work"),
+            Some(default)
+        ));
+        assert!(!is_default_account(default, None));
+    }
 
     #[test]
     fn configured_account_auto_mode_is_scoped_oauth_only() {

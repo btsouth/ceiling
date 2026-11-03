@@ -24,7 +24,7 @@ pub enum ClaudeDesktopSessionStatus {
 /// redirected Roaming directory; older standalone builds use `%APPDATA%`.
 /// Linux Electron builds keep `Network/Cookies` and `Local State` under
 /// `~/.config/Claude`.
-fn claude_desktop_data_dirs() -> Vec<PathBuf> {
+pub(super) fn claude_desktop_data_dirs() -> Vec<PathBuf> {
     let mut candidates = std::env::var_os("CLAUDE_DESKTOP_DATA_DIR")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -112,6 +112,10 @@ fn claude_desktop_session() -> Result<String, ClaudeDesktopSessionStatus> {
 }
 
 pub fn claude_desktop_session_status() -> ClaudeDesktopSessionStatus {
+    // Desktop's own token works while its cookie database is locked.
+    if super::desktop_token::load_desktop_token().is_some() {
+        return ClaudeDesktopSessionStatus::Ready;
+    }
     match claude_desktop_session() {
         Ok(_) => ClaudeDesktopSessionStatus::Ready,
         Err(status) => status,
@@ -370,6 +374,10 @@ impl ClaudeWebApiFetcher {
         );
 
         headers
+    }
+
+    pub(super) fn has_session_key_in_env() -> bool {
+        Self::resolve_session_key_from_env().is_some()
     }
 
     fn resolve_session_key_from_env() -> Option<String> {

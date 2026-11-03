@@ -5,6 +5,7 @@
 use chrono::{DateTime, Utc};
 use reqwest::Client;
 use reqwest::header::{HeaderValue, RETRY_AFTER};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -19,6 +20,26 @@ mod refresh;
 
 pub(super) fn credentials_file_available(config_dir: Option<&std::path::Path>) -> bool {
     credentials_store::credentials_file_available(config_dir)
+}
+
+/// Whether Claude Code is signed in for this directory, through its file, the OS
+/// credential store or the environment.
+pub(super) fn claude_code_signed_in(config_dir: Option<&std::path::Path>) -> bool {
+    credentials_store::claude_code_credentials_present(config_dir)
+}
+
+/// Point a rejected Desktop token at Desktop. Rate limits and server errors say
+/// nothing about the sign-in, so they stay as they are.
+fn desktop_token_error(error: ProviderError) -> ProviderError {
+    match error {
+        ProviderError::OAuth(message) if message.starts_with("OAuth token") => {
+            ProviderError::OAuth(
+                "Claude Desktop's sign-in was not accepted. Open Claude Desktop and sign in again."
+                    .to_string(),
+            )
+        }
+        other => other,
+    }
 }
 
 /// OAuth credentials from Claude CLI
@@ -42,7 +63,7 @@ impl ClaudeOAuthCredentials {
         self.is_expired_at(Utc::now())
     }
 
-    fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
+    pub(super) fn is_expired_at(&self, now: DateTime<Utc>) -> bool {
         if let Some(expires_at) = self.expires_at {
             // Consider expired if within 5 minutes of expiry
             expires_at <= now + chrono::Duration::minutes(5)
@@ -62,6 +83,22 @@ impl ClaudeOAuthCredentials {
 pub type OAuthUsageResponse = ClaudeUsageResponse;
 pub type UsageWindow = ClaudeUsageWindow;
 
+#[derive(Debug, Deserialize)]
+struct TokenProfile {
+    account: Option<TokenProfileAccount>,
+    organization: Option<TokenProfileOrganization>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenProfileAccount {
+    email: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TokenProfileOrganization {
+    name: Option<String>,
+}
+
 /// Claude OAuth fetcher
 pub struct ClaudeOAuthFetcher {
     client: Client,
@@ -74,6 +111,7 @@ static RATE_LIMIT_BACKOFF_UNTIL: OnceLock<Mutex<HashMap<String, Instant>>> = Onc
 
 impl ClaudeOAuthFetcher {
     const USAGE_URL: &'static str = "https://api.anthropic.com/api/oauth/usage";
+    const PROFILE_URL: &'static str = "https://api.anthropic.com/api/oauth/profile";
     const DEFAULT_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(5 * 60);
 
     pub fn new() -> Self {
@@ -136,6 +174,60 @@ impl ClaudeOAuthFetcher {
         };
 
         self.fetch_with_credentials(credentials).await
+    }
+
+    /// Fetch usage with Claude Desktop's own token. The reading is labeled from
+    /// that token's profile: `~/.claude.json` describes Claude Code, which can be
+    /// signed out or signed in as someone else.
+    pub(super) async fn fetch_with_desktop_credentials(
+        &self,
+        credentials: ClaudeOAuthCredentials,
+    ) -> Result<ProviderFetchResult, ProviderError> {
+        let usage_response = self
+            .fetch_usage(&credentials)
+            .await
+            .map_err(desktop_token_error)?;
+        let mut usage = self.build_usage_snapshot(&usage_response, &credentials);
+        if let Some(profile) = self.fetch_token_profile(&credentials).await {
+            if let Some(email) = profile.account.and_then(|account| account.email) {
+                usage = usage.with_email(email);
+            }
+            if let Some(name) = profile
+                .organization
+                .and_then(|organization| organization.name)
+            {
+                usage = usage.with_organization(name);
+            }
+        }
+
+        let mut result = ProviderFetchResult::new(usage, "desktop");
+        if let Some(cost) = usage_response.extra_usage_cost() {
+            result = result.with_cost(cost);
+        }
+        Ok(result)
+    }
+
+    async fn fetch_token_profile(
+        &self,
+        credentials: &ClaudeOAuthCredentials,
+    ) -> Option<TokenProfile> {
+        let response = self
+            .client
+            .get(Self::PROFILE_URL)
+            .header(
+                "Authorization",
+                format!("Bearer {}", credentials.access_token),
+            )
+            .header("Accept", "application/json")
+            .header("anthropic-beta", "oauth-2025-04-20")
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        response.json().await.ok()
     }
 
     async fn fetch_with_credentials(
@@ -825,6 +917,26 @@ mod tests {
         );
         second.clear_rate_limit();
         assert!(first.rate_limit_backoff_remaining().is_none());
+    }
+
+    #[test]
+    fn only_a_rejected_token_blames_the_desktop_sign_in() {
+        use super::desktop_token_error;
+        use crate::core::ProviderError;
+
+        let rejected = desktop_token_error(ProviderError::OAuth(
+            "OAuth token invalid or expired. Run `claude` to re-authenticate.".to_string(),
+        ));
+        assert!(rejected.to_string().contains("Open Claude Desktop"));
+        assert!(!rejected.to_string().contains("Run `claude`"));
+
+        for untouched in [
+            ClaudeOAuthFetcher::rate_limited_error(Duration::from_secs(5)),
+            ProviderError::OAuth("API error 500 Internal Server Error: oops".to_string()),
+        ] {
+            let message = untouched.to_string();
+            assert_eq!(desktop_token_error(untouched).to_string(), message);
+        }
     }
 
     #[test]
