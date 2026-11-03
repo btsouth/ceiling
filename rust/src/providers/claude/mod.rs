@@ -947,10 +947,9 @@ fn claude_auto_fetch_error(failures: Vec<(&'static str, ProviderError)>) -> Prov
     ))
 }
 
-/// A card for a directory other than the default `~/.claude` never uses the
-/// Claude Desktop sign-in, so a directory without credentials needs to say so
-/// and name the ways out. Any other failure (expired token, network) keeps its
-/// own message.
+/// Only the default directory's card can use the Claude Desktop sign-in, so any
+/// other directory without credentials needs to say so and name the ways out.
+/// Any other failure (expired token, network) keeps its own message.
 fn scoped_oauth_error(
     dir: &std::path::Path,
     error: ProviderError,
@@ -962,7 +961,7 @@ fn scoped_oauth_error(
     // Keep this free of "Claude OAuth credentials not found": the desktop
     // bridge rewrites that phrase into a generic sign-in hint.
     ProviderError::OAuth(format!(
-        "No Claude Code sign-in found in {}. Cards for directories other than the default ~/.claude never use the Claude Desktop sign-in. To fix this, run `claude` with CLAUDE_CONFIG_DIR set to that directory and sign in, or remove the account in Ceiling.",
+        "No Claude Code sign-in found in {}. Only the default Claude card can use the Claude Desktop sign-in. To fix this, run `claude` with CLAUDE_CONFIG_DIR set to that directory and sign in, or remove the account in Ceiling.",
         dir.display()
     ))
 }
@@ -1894,7 +1893,7 @@ Resets Dec 24 at 3:59pm (Europe/Paris)
         assert_eq!(
             message,
             format!(
-                "OAuth error: No Claude Code sign-in found in {}. Cards for directories other than the default ~/.claude never use the Claude Desktop sign-in. To fix this, run `claude` with CLAUDE_CONFIG_DIR set to that directory and sign in, or remove the account in Ceiling.",
+                "OAuth error: No Claude Code sign-in found in {}. Only the default Claude card can use the Claude Desktop sign-in. To fix this, run `claude` with CLAUDE_CONFIG_DIR set to that directory and sign in, or remove the account in Ceiling.",
                 dir.display()
             )
         );
@@ -1902,6 +1901,28 @@ Resets Dec 24 at 3:59pm (Europe/Paris)
         assert!(
             !lower.contains("claude oauth credentials not found"),
             "the desktop bridge would replace this message with a generic hint"
+        );
+    }
+
+    #[tokio::test]
+    async fn configured_directory_without_credentials_names_the_directory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ctx = FetchContext {
+            account_config_dir: Some(dir.path().to_path_buf()),
+            ..FetchContext::default()
+        };
+
+        let err = ClaudeProvider::new()
+            .fetch_via_auto(&ctx)
+            .await
+            .expect_err("a directory with no credentials cannot fetch");
+
+        assert!(
+            err.to_string().contains(&format!(
+                "No Claude Code sign-in found in {}.",
+                dir.path().display()
+            )),
+            "unexpected error: {err}"
         );
     }
 

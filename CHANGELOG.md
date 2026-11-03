@@ -2,6 +2,9 @@
 
 ## [Ceiling] Unreleased
 
+### Fixed
+- **A Claude card outside the default directory says why it has no usage.** With no Claude Code sign-in in that directory, the card showed a generic sign-in error. It now names the directory, says only the default card can use the Claude Desktop sign-in, and gives the two ways to fix it. Thanks to @sharmis-tp.
+
 ## [Ceiling] 1.5.48 - 2026-11-02
 
 Claude usage works if you only use Claude Desktop, with the app open or closed.
