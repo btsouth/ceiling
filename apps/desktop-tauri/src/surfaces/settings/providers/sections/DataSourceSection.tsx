@@ -24,7 +24,9 @@ export function DataSourceSection({ provider, t }: Props) {
     <section className="provider-detail-section provider-detail-datasource">
       <h4>{t("DataSourceSectionTitle")}</h4>
       <p className="provider-detail-datasource__source">
-        {t(providerProvenanceKey(provider.id))}
+        {provider.id === "deepseekharness"
+          ? "读取本机 DSH 会话中的用量记录，并使用 DSH 已保存的账号登录状态，向 platform.deepseek.com 查询余额。无需 API Key；不会修改登录状态。"
+          : t(providerProvenanceKey(provider.id))}
       </p>
       <p className="provider-detail-datasource__privacy">
         {t("DataSourcePrivacyNote")}

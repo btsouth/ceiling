@@ -137,7 +137,10 @@ impl<'a> ConstrainingReadout<'a> {
 /// Session (`claude-session`, SBS-1040).
 fn primary_named_state(snapshot: &crate::commands::ProviderUsageSnapshot) -> Option<&str> {
     let row = snapshot.inactive_rate_windows.iter().find(|row| {
-        row.id == "cursor-plan" || row.id == "cursor-monthly" || row.id == "claude-session"
+        row.id == "cursor-plan"
+            || row.id == "cursor-monthly"
+            || row.id == "claude-session"
+            || row.id == "dsh-usage"
     })?;
     Some(if row.state == "unavailable" {
         "unavailable"
@@ -151,6 +154,9 @@ fn strip_named_label(
     readout: &ConstrainingReadout<'_>,
     lang: codexbar::settings::Language,
 ) -> Option<String> {
+    if readout.label == Some("DSH") && readout.named_state.is_some() {
+        return readout.window.reset_description.clone();
+    }
     let key = match readout.named_state? {
         "unavailable" => codexbar::locale::LocaleKey::WindowUnavailable,
         _ => codexbar::locale::LocaleKey::NotCurrentlyEnforced,
@@ -169,6 +175,9 @@ fn compact_named_label(
     readout: &ConstrainingReadout<'_>,
     lang: codexbar::settings::Language,
 ) -> Option<String> {
+    if readout.label == Some("DSH") && readout.named_state.is_some() {
+        return readout.window.reset_description.clone();
+    }
     let key = match readout.named_state? {
         "unavailable" => codexbar::locale::LocaleKey::StripStateUnavailable,
         _ => codexbar::locale::LocaleKey::StripStateNotEnforced,
@@ -421,6 +430,14 @@ fn constraining_readout(
     if snapshot.provider_id == "cursor" {
         return cursor_strip_readout(snapshot);
     }
+    if snapshot.provider_id == "deepseekharness" {
+        return ConstrainingReadout {
+            label: Some("DSH"),
+            window: &snapshot.primary,
+            amount: None,
+            named_state: Some("unavailable"),
+        };
+    }
     let mut best = ConstrainingReadout {
         label: snapshot.primary_label.as_deref(),
         window: &snapshot.primary,
@@ -494,6 +511,9 @@ fn preferred_readout<'a>(
     snapshot: &'a crate::commands::ProviderUsageSnapshot,
     preference: codexbar::settings::MetricPreference,
 ) -> ConstrainingReadout<'a> {
+    if snapshot.provider_id == "deepseekharness" {
+        return constraining_readout(snapshot);
+    }
     match preference {
         codexbar::settings::MetricPreference::Session => ConstrainingReadout {
             label: snapshot.primary_label.as_deref(),
@@ -4020,6 +4040,35 @@ mod tests {
         assert_eq!(with_weekly.label, Some("Weekly"));
         assert!(with_weekly.named_state.is_none());
         assert_eq!(strip_readout_percent(&with_weekly, true), Some(23));
+    }
+
+    #[test]
+    fn dsh_strip_shows_wallet_instead_of_a_quota_percentage() {
+        let mut snapshot = snap("deepseekharness", None, 0.0);
+        snapshot.primary_label = Some("DSH".into());
+        snapshot.primary.reset_description = Some("¥42.12".into());
+        snapshot
+            .inactive_rate_windows
+            .push(crate::commands::InactiveRateWindowSnapshot {
+                id: "dsh-usage".into(),
+                title: "DSH".into(),
+                description: "No quota".into(),
+                state: "unavailable".into(),
+            });
+        snapshot
+            .extra_rate_windows
+            .push(crate::commands::NamedRateWindowSnapshot {
+                id: "dsh-month".into(),
+                title: "本月 Token".into(),
+                window: rate_window(0.0, None),
+                amount: None,
+            });
+        let readout = constraining_readout(&snapshot);
+        assert_eq!(strip_readout_percent(&readout, false), None);
+        assert_eq!(
+            strip_named_label(&readout, codexbar::settings::Language::default()).as_deref(),
+            Some("¥42.12")
+        );
     }
 
     /// #513: an Enterprise seat reports only its monthly spend limit. The

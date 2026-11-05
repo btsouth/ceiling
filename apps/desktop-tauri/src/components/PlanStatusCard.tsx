@@ -223,7 +223,8 @@ export default function PlanStatusCard({
     ? accountIdentityLabel(provider, hideEmail)
     : null;
   const notEnforcedSummary = inactiveWindowSummary(provider, "notEnforced");
-  const unavailableSummary = inactiveWindowSummary(provider, "unavailable");
+  const isHarness = provider.providerId === "deepseekharness";
+  const unavailableSummary = isHarness ? null : inactiveWindowSummary(provider, "unavailable");
   const resetCredits = bankedResetCredits(provider);
   const meterSummary = [meters.primary, ...meters.companions]
     .filter((meter): meter is ConstrainingWindow => meter != null)
@@ -237,6 +238,11 @@ export default function PlanStatusCard({
   }
   if (unavailableSummary) {
     meterSummary.push(`${unavailableSummary}: ${t("WindowUnavailable")}`);
+  }
+  if (isHarness) {
+    for (const row of harnessOverviewRows(provider.extraRateWindows ?? [])) {
+      meterSummary.push(`${row.title} ${row.window.resetDescription ?? "未报告"}`);
+    }
   }
   const accessibleLabel = provider.error
     ? `${provider.displayName}: ${provider.error}`
@@ -312,6 +318,8 @@ export default function PlanStatusCard({
 
       {provider.error ? (
         <p className="plan-status-card__error">{provider.error}</p>
+      ) : isHarness ? (
+        <DeepSeekHarnessUsage rows={provider.extraRateWindows ?? []} compact />
       ) : (
         <div className="plan-status-card__meters">
           {meters.primary && (
@@ -393,3 +401,4 @@ export function glanceDisplayPercent(
       : Math.max(0, Math.min(100, snap.remainingPercent)),
   );
 }
+import DeepSeekHarnessUsage, { harnessOverviewRows } from "./DeepSeekHarnessUsage";

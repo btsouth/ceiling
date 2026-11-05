@@ -460,6 +460,15 @@ pub fn render_text_with_status(
 
     lines.push(render_usage_header(provider, result, status, use_color));
     append_status_line(&mut lines, status);
+    if provider == ProviderId::DeepSeekHarness {
+        lines.extend(result.usage.extra_rate_windows.iter().filter_map(|row| {
+            row.window
+                .reset_description
+                .as_ref()
+                .map(|value| format!("  {}: {value}", row.title))
+        }));
+        return lines.join("\n");
+    }
     append_account_lines(&mut lines, &result.usage);
     append_usage_window_lines(&mut lines, &result.usage, &metadata, use_color);
     append_cost_line(&mut lines, result.cost.as_ref());
@@ -595,6 +604,15 @@ fn append_model_specific_line(
 }
 
 pub fn render_brief_text(provider: ProviderId, result: &ProviderFetchResult) -> String {
+    if provider == ProviderId::DeepSeekHarness {
+        let summary = result
+            .usage
+            .primary
+            .reset_description
+            .as_deref()
+            .unwrap_or("—");
+        return format!("{}: {summary}", provider.display_name());
+    }
     let metadata = instantiate_provider(provider).metadata().clone();
     let usage = &result.usage;
     let reset = usage

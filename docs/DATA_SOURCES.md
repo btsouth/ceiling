@@ -35,6 +35,7 @@ browser cookie databases; website cookies must be copied explicitly. See
 | **GitHub Copilot** | Your GitHub CLI / Git Credential Manager token (or a device-flow sign-in) | api.github.com, or your GitHub Enterprise host |
 | **Gemini** | The OAuth token from the Gemini CLI (`~/.gemini/oauth_creds.json`) | Google Code Assist and OAuth endpoints |
 | **Grok** | The OIDC session from Grok Build (`~/.grok/auth.json` via `grok login`), or grok.com cookies you provide; tokens refresh via auth.x.ai; plus local `~/.grok/sessions` logs for tokens / cache / effort / projects / API-equivalent $ (`costUsdTicks`) | grok.com, auth.x.ai |
+| **DeepSeek Harness** (custom local build) | Read-only `$DSH_HOME/sessions` JSONL/Zstandard usage, default `~/.dsh`; existing `deepseek-account-platform/default` grant in `.credentials.yaml` for the official account wallet query. No API key, credential refresh/write, model request or conversation upload. Recharge and bonus balances remain separate; local Token counts are not a bill or quota percentage. | platform.deepseek.com |
 | Other providers | A local session or token on this PC, or the provider's own usage endpoint | The provider's own domain only |
 
 ## Network policy
