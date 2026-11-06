@@ -4,6 +4,7 @@ import type {
 } from "../../../../types/bridge";
 import type { LocaleKey } from "../../../../i18n/keys";
 import { useFormattedResetTime } from "../../../../hooks/useFormattedResetTime";
+import DeepSeekHarnessUsage from "../../../../components/DeepSeekHarnessUsage";
 
 interface Props {
   provider: ProviderDetail;
@@ -23,6 +24,9 @@ interface BarSpec {
  * `rust/src/native_ui/preferences.rs::render_provider_detail_panel`.
  */
 export function UsageSection({ provider, resetTimeRelative, t }: Props) {
+  if (provider.id === "deepseekharness") {
+    return <DeepSeekHarnessUsage rows={provider.extraRateWindows ?? []} />;
+  }
   const bars: BarSpec[] = [];
   if (provider.session) {
     bars.push({

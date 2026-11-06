@@ -236,8 +236,12 @@ function ProviderRow({ provider, showAccount, hideEmail, onStrip, showAsUsed, no
             {accountName}
           </div>
         )}
+        {provider.providerId === "deepseekharness" && !provider.error && (
+          <DeepSeekHarnessUsage rows={provider.extraRateWindows ?? []} compact />
+        )}
         <div className="taskbar-flyout__meters">
           {windows.map(({ id, label, window, amount, namedState }) => {
+            if (provider.providerId === "deepseekharness") return null;
             if (namedState) {
               const unavailable = namedState === "unavailable";
               return (
@@ -484,3 +488,4 @@ export default function TaskbarFlyout({ state }: { state: BootstrapState }) {
     </main>
   );
 }
+import DeepSeekHarnessUsage from "../components/DeepSeekHarnessUsage";

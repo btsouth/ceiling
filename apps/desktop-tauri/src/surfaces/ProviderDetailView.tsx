@@ -16,6 +16,7 @@ import { formatRelativeUpdated } from "../lib/relativeTime";
 import { getProviderChartData } from "../lib/tauri";
 import { providerSupportsChartData } from "../lib/providerCharts";
 import { accountIdentityLabel } from "../lib/providerRow";
+import DeepSeekHarnessUsage from "../components/DeepSeekHarnessUsage";
 import {
   allMeasuredWindows,
   bankedResetCredits,
@@ -381,6 +382,8 @@ export default function ProviderDetailView({
           <strong>Usage unavailable</strong>
           <span>{provider.error}</span>
         </section>
+      ) : provider.providerId === "deepseekharness" ? (
+        <DeepSeekHarnessUsage rows={provider.extraRateWindows ?? []} />
       ) : (
         <>
           <section className="provider-focus__primary">

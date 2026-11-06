@@ -300,6 +300,9 @@ function providerSidebarMetric(
   if (!snap) return undefined;
   const rate = snap.primary;
   if (!rate) return undefined;
+  if (snap.providerId === "deepseekharness") {
+    return snap.error ? undefined : rate.resetDescription ?? undefined;
+  }
   if (Number.isFinite(rate.usedPercent)) {
     return `${Math.round(Math.max(0, rate.usedPercent))}%`;
   }
