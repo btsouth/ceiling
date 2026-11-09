@@ -1,6 +1,11 @@
 # Changelog
 
-## [Ceiling] Unreleased
+## [Ceiling] 1.5.49 - 2026-11-08
+
+Ceiling shows DeepSeek Harness usage and wallet balances.
+
+### Added
+- **DeepSeek Harness usage and balances.** Turn on the DeepSeek Harness provider in Settings to see today's and this month's tokens, split by input, output, cache and model, from your local DSH sessions. If you're signed in to DeepSeek in DSH, it also shows your topped-up and bonus wallet balances. DeepSeek reports no plan limit, so Ceiling shows these as totals, not a percentage. Ceiling only reads DSH's saved sign-in and never changes it. Thanks to @lianshu-codex.
 
 ### Fixed
 - **A Claude card outside the default directory says why it has no usage.** With no Claude Code sign-in in that directory, the card showed a generic sign-in error. It now names the directory, says only the default card can use the Claude Desktop sign-in, and gives the two ways to fix it. Thanks to @sharmis-tp.
