@@ -611,7 +611,18 @@ pub fn render_brief_text(provider: ProviderId, result: &ProviderFetchResult) -> 
             .reset_description
             .as_deref()
             .unwrap_or("—");
-        return format!("{}: {summary}", provider.display_name());
+        let today = result
+            .usage
+            .extra_rate_windows
+            .iter()
+            .find(|row| row.id == "dsh-today")
+            .and_then(|row| row.window.reset_description.as_deref());
+        return match today {
+            Some(today) if !summary.ends_with(" tok") => {
+                format!("{}: {summary} · {today} tok today", provider.display_name())
+            }
+            _ => format!("{}: {summary}", provider.display_name()),
+        };
     }
     let metadata = instantiate_provider(provider).metadata().clone();
     let usage = &result.usage;
@@ -820,6 +831,37 @@ mod tests {
         assert_eq!(
             output,
             "Claude: Session (5h) <1%, Weekly 100%, resets n/a, Pro"
+        );
+    }
+
+    #[test]
+    fn deepseek_harness_brief_shows_balance_and_todays_tokens() {
+        let today = |usage: UsageSnapshot| {
+            usage.with_extra_rate_window(
+                "dsh-today",
+                "Tokens today",
+                RateWindow::with_details(0.0, None, None, Some("1,234".into())),
+            )
+        };
+        let balance = fetch_result(today(UsageSnapshot::new(RateWindow::with_details(
+            0.0,
+            None,
+            None,
+            Some("¥42.12".into()),
+        ))));
+        assert_eq!(
+            render_brief_text(ProviderId::DeepSeekHarness, &balance),
+            "DeepSeek Harness: ¥42.12 · 1,234 tok today"
+        );
+        let tokens_only = fetch_result(today(UsageSnapshot::new(RateWindow::with_details(
+            0.0,
+            None,
+            None,
+            Some("1,234 tok".into()),
+        ))));
+        assert_eq!(
+            render_brief_text(ProviderId::DeepSeekHarness, &tokens_only),
+            "DeepSeek Harness: 1,234 tok"
         );
     }
 

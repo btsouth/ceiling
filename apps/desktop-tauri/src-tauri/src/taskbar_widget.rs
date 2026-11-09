@@ -176,13 +176,40 @@ fn compact_named_label(
     lang: codexbar::settings::Language,
 ) -> Option<String> {
     if readout.label == Some("DSH") && readout.named_state.is_some() {
-        return readout.window.reset_description.clone();
+        return readout
+            .window
+            .reset_description
+            .as_deref()
+            .map(compact_token_headline);
     }
     let key = match readout.named_state? {
         "unavailable" => codexbar::locale::LocaleKey::StripStateUnavailable,
         _ => codexbar::locale::LocaleKey::StripStateNotEnforced,
     };
     Some(codexbar::locale::get_text(lang, key))
+}
+
+/// Shortens a DeepSeek Harness token headline ("1,234,567 tok") to "1.2M" so
+/// it still fits a narrow tile. Balances and other text pass through as is.
+fn compact_token_headline(headline: &str) -> String {
+    let Some(count) = headline
+        .strip_suffix(" tok")
+        .and_then(|digits| digits.replace(',', "").parse::<u64>().ok())
+    else {
+        return headline.to_string();
+    };
+    let value = count as f64;
+    let (scaled, suffix) = match count {
+        0..1_000 => return count.to_string(),
+        1_000..1_000_000 => (value / 1e3, "K"),
+        1_000_000..1_000_000_000 => (value / 1e6, "M"),
+        _ => (value / 1e9, "B"),
+    };
+    if scaled < 10.0 {
+        format!("{:.1}{suffix}", (scaled * 10.0).floor() / 10.0)
+    } else {
+        format!("{:.0}{suffix}", scaled.floor())
+    }
 }
 
 /// Inline reset for the tile, when the user asked for it and the window is a
@@ -4069,6 +4096,20 @@ mod tests {
             strip_named_label(&readout, codexbar::settings::Language::default()).as_deref(),
             Some("¥42.12")
         );
+        assert_eq!(
+            compact_named_label(&readout, codexbar::settings::Language::default()).as_deref(),
+            Some("¥42.12")
+        );
+    }
+
+    #[test]
+    fn deepseek_harness_token_headline_has_a_tile_width_form() {
+        assert_eq!(compact_token_headline("999 tok"), "999");
+        assert_eq!(compact_token_headline("1,234 tok"), "1.2K");
+        assert_eq!(compact_token_headline("1,234,567 tok"), "1.2M");
+        assert_eq!(compact_token_headline("45,678,901 tok"), "45M");
+        assert_eq!(compact_token_headline("2,000,000,000 tok"), "2.0B");
+        assert_eq!(compact_token_headline("Unavailable"), "Unavailable");
     }
 
     /// #513: an Enterprise seat reports only its monthly spend limit. The
