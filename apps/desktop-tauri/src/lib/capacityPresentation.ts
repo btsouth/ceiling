@@ -63,6 +63,7 @@ const PRIMARY_PLACEHOLDER_IDS = new Set([
   "cursor-plan",
   "cursor-monthly",
   "claude-session",
+  "dsh-usage",
 ]);
 
 export function isPrimaryPlaceholderId(id: string): boolean {
@@ -415,6 +416,7 @@ function isCompanionHot(
 function nonPrimaryWindows(
   provider: ProviderUsageSnapshot,
 ): ConstrainingWindow[] {
+  if (provider.providerId === "deepseekharness") return [];
   const out: ConstrainingWindow[] = [];
   const push = (
     id: string,

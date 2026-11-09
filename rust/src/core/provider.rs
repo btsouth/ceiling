@@ -45,6 +45,7 @@ pub enum ProviderId {
     Bedrock,
     Codebuff,
     DeepSeek,
+    DeepSeekHarness,
     Windsurf,
     Manus,
     MiMo,
@@ -109,6 +110,7 @@ impl ProviderId {
             ProviderId::Bedrock,
             ProviderId::Codebuff,
             ProviderId::DeepSeek,
+            ProviderId::DeepSeekHarness,
             ProviderId::Windsurf,
             ProviderId::Manus,
             ProviderId::MiMo,
@@ -171,6 +173,7 @@ impl ProviderId {
             ProviderId::Bedrock => "bedrock",
             ProviderId::Codebuff => "codebuff",
             ProviderId::DeepSeek => "deepseek",
+            ProviderId::DeepSeekHarness => "deepseekharness",
             ProviderId::Windsurf => "windsurf",
             ProviderId::Manus => "manus",
             ProviderId::MiMo => "mimo",
@@ -234,6 +237,7 @@ impl ProviderId {
             ProviderId::Bedrock => "AWS Bedrock",
             ProviderId::Codebuff => "Codebuff",
             ProviderId::DeepSeek => "DeepSeek",
+            ProviderId::DeepSeekHarness => "DeepSeek Harness",
             ProviderId::Windsurf => "Windsurf",
             ProviderId::Manus => "Manus",
             ProviderId::MiMo => "Xiaomi MiMo",
@@ -308,6 +312,7 @@ impl ProviderId {
             ProviderId::Bedrock => None,
             ProviderId::Codebuff => None,
             ProviderId::DeepSeek => None,
+            ProviderId::DeepSeekHarness => None,
             ProviderId::Windsurf => None,
             ProviderId::Doubao => None,
             ProviderId::Crof => None,
@@ -368,6 +373,9 @@ impl ProviderId {
             "bedrock" | "aws-bedrock" | "aws bedrock" => Some(ProviderId::Bedrock),
             "codebuff" | "manicode" => Some(ProviderId::Codebuff),
             "deepseek" | "deep-seek" | "ds" => Some(ProviderId::DeepSeek),
+            "deepseekharness" | "deepseek harness" | "deepseek-harness" | "dsh" => {
+                Some(ProviderId::DeepSeekHarness)
+            }
             "windsurf" | "codeium" => Some(ProviderId::Windsurf),
             "manus" => Some(ProviderId::Manus),
             "mimo" | "xiaomi" | "xiaomimimo" | "xiaomi-mimo" | "xiaomi mimo" => {
@@ -663,7 +671,7 @@ mod tests {
     #[test]
     fn test_provider_id_all() {
         let all = ProviderId::all();
-        assert_eq!(all.len(), 57);
+        assert_eq!(all.len(), 58);
         assert!(all.contains(&ProviderId::Claude));
         assert!(all.contains(&ProviderId::Codex));
         assert!(all.contains(&ProviderId::Kimi));
@@ -678,6 +686,7 @@ mod tests {
         assert!(all.contains(&ProviderId::Bedrock));
         assert!(all.contains(&ProviderId::Codebuff));
         assert!(all.contains(&ProviderId::DeepSeek));
+        assert!(all.contains(&ProviderId::DeepSeekHarness));
         assert!(all.contains(&ProviderId::Windsurf));
         assert!(all.contains(&ProviderId::Manus));
         assert!(all.contains(&ProviderId::MiMo));
@@ -713,6 +722,10 @@ mod tests {
 
     #[test]
     fn test_provider_id_display_name() {
+        assert_eq!(
+            ProviderId::from_cli_name("dsh").map(|id| id.display_name()),
+            Some("DeepSeek Harness")
+        );
         assert_eq!(ProviderId::Claude.display_name(), "Claude");
         assert_eq!(ProviderId::Factory.display_name(), "Factory");
         assert_eq!(ProviderId::Zai.display_name(), "z.ai");

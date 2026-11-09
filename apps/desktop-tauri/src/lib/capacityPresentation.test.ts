@@ -63,6 +63,15 @@ function provider(
 }
 
 describe("capacityPresentation", () => {
+  it("never treats DSH token counters as quota windows", () => {
+    const snap = provider({ providerId: "deepseekharness", primary: window(0),
+      inactiveRateWindows: [{ id: "dsh-usage", title: "DSH", description: "No quota reported", state: "unavailable" }],
+      extraRateWindows: [{ id: "dsh-month", title: "Tokens this month", window: window(0) }],
+    });
+    expect(constrainingWindow(snap).namedState).toBe("unavailable");
+    expect(allMeasuredWindows(snap)).toEqual([]);
+    expect(glanceMeters(snap)).toEqual({ primary: null, companions: [] });
+  });
   it("selects the highest used measured window as constraining", () => {
     const snap = provider({
       secondary: window(55),

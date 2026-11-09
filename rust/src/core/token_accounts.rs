@@ -237,7 +237,8 @@ impl TokenAccountSupport {
             | ProviderId::Devin
             | ProviderId::Zed
             | ProviderId::CrossModel
-            | ProviderId::Wayfinder => None,
+            | ProviderId::Wayfinder
+            | ProviderId::DeepSeekHarness => None,
         }
     }
 

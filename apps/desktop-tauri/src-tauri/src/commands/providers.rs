@@ -736,6 +736,11 @@ fn widget_entry_from_usage_snapshot(
         return None;
     }
     let provider = ProviderId::from_cli_name(&snap.provider_id)?;
+    // Harness rows describe counts and wallets. The widget protocol only
+    // understands quota windows and would report a fabricated percentage.
+    if provider == ProviderId::DeepSeekHarness {
+        return None;
+    }
     let updated_at = chrono::DateTime::parse_from_rfc3339(&snap.updated_at)
         .ok()
         .map(|dt| dt.with_timezone(&chrono::Utc))

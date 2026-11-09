@@ -27,6 +27,7 @@ import { ProviderIcon } from "./providers/ProviderIcon";
 import { getProviderIcon } from "./providers/providerIcons";
 import { accountIdentityLabel } from "../lib/providerRow";
 import { maskEmail } from "../lib/privacy";
+import DeepSeekHarnessUsage from "./DeepSeekHarnessUsage";
 
 /** Small copy-to-clipboard button matching macOS CopyIconButton (doc.on.doc → checkmark). */
 export function CopyIconButton({ text }: { text: string }) {
@@ -497,6 +498,7 @@ export default function MenuCard({
   }, [provider.providerId, provider.accountEmail, provider.accountId, provider.accountOrganization, onLayoutChange]);
 
   const isWayfinder = provider.providerId === "wayfinder";
+  const isDsh = provider.providerId === "deepseekharness";
   const rawEmail = !isWayfinder && provider.accountEmail
     ? hideEmail
       ? maskEmail(provider.accountEmail)
@@ -557,7 +559,7 @@ export default function MenuCard({
       inactive: true,
     });
   }
-  const visibleMetrics = metrics;
+  const visibleMetrics = isDsh ? [] : metrics;
 
   const hasCreditsHistory =
     chartData !== null && chartData.creditsHistory.length > 0;
@@ -576,7 +578,7 @@ export default function MenuCard({
   const wayfinderUsage = isWayfinder ? provider.wayfinderUsage : null;
   const hasDetails =
     !provider.error &&
-    (hasMetrics || hasCost || hasPace || hasCharts || !!localUsage || !!wayfinderUsage || promoBoosts.length > 0);
+    (hasMetrics || hasCost || hasPace || hasCharts || !!localUsage || !!wayfinderUsage || isDsh || promoBoosts.length > 0);
   const cardAgeMs = Date.parse(provider.updatedAt);
   const isStale =
     !provider.error &&
@@ -739,6 +741,7 @@ export default function MenuCard({
           )}
 
           {wayfinderUsage && <WayfinderUsageBlock usage={wayfinderUsage} />}
+          {isDsh && <DeepSeekHarnessUsage rows={provider.extraRateWindows ?? []} />}
 
           {localUsage && (
             <LocalUsageBlock

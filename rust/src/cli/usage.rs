@@ -460,6 +460,15 @@ pub fn render_text_with_status(
 
     lines.push(render_usage_header(provider, result, status, use_color));
     append_status_line(&mut lines, status);
+    if provider == ProviderId::DeepSeekHarness {
+        lines.extend(result.usage.extra_rate_windows.iter().filter_map(|row| {
+            row.window
+                .reset_description
+                .as_ref()
+                .map(|value| format!("  {}: {value}", row.title))
+        }));
+        return lines.join("\n");
+    }
     append_account_lines(&mut lines, &result.usage);
     append_usage_window_lines(&mut lines, &result.usage, &metadata, use_color);
     append_cost_line(&mut lines, result.cost.as_ref());
@@ -595,6 +604,26 @@ fn append_model_specific_line(
 }
 
 pub fn render_brief_text(provider: ProviderId, result: &ProviderFetchResult) -> String {
+    if provider == ProviderId::DeepSeekHarness {
+        let summary = result
+            .usage
+            .primary
+            .reset_description
+            .as_deref()
+            .unwrap_or("—");
+        let today = result
+            .usage
+            .extra_rate_windows
+            .iter()
+            .find(|row| row.id == "dsh-today")
+            .and_then(|row| row.window.reset_description.as_deref());
+        return match today {
+            Some(today) if !summary.ends_with(" tok") => {
+                format!("{}: {summary} · {today} tok today", provider.display_name())
+            }
+            _ => format!("{}: {summary}", provider.display_name()),
+        };
+    }
     let metadata = instantiate_provider(provider).metadata().clone();
     let usage = &result.usage;
     let reset = usage
@@ -802,6 +831,37 @@ mod tests {
         assert_eq!(
             output,
             "Claude: Session (5h) <1%, Weekly 100%, resets n/a, Pro"
+        );
+    }
+
+    #[test]
+    fn deepseek_harness_brief_shows_balance_and_todays_tokens() {
+        let today = |usage: UsageSnapshot| {
+            usage.with_extra_rate_window(
+                "dsh-today",
+                "Tokens today",
+                RateWindow::with_details(0.0, None, None, Some("1,234".into())),
+            )
+        };
+        let balance = fetch_result(today(UsageSnapshot::new(RateWindow::with_details(
+            0.0,
+            None,
+            None,
+            Some("¥42.12".into()),
+        ))));
+        assert_eq!(
+            render_brief_text(ProviderId::DeepSeekHarness, &balance),
+            "DeepSeek Harness: ¥42.12 · 1,234 tok today"
+        );
+        let tokens_only = fetch_result(today(UsageSnapshot::new(RateWindow::with_details(
+            0.0,
+            None,
+            None,
+            Some("1,234 tok".into()),
+        ))));
+        assert_eq!(
+            render_brief_text(ProviderId::DeepSeekHarness, &tokens_only),
+            "DeepSeek Harness: 1,234 tok"
         );
     }
 

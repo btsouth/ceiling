@@ -180,7 +180,8 @@ function ProviderPill({
   const exhausted =
     !hero.namedState && (hero.window.isExhausted || !!provider.error);
   let tone: "ok" | "warn" | "crit" = "ok";
-  if (hero.namedState === "unavailable") {
+  const isHarness = provider.providerId === "deepseekharness";
+  if (hero.namedState === "unavailable" && !isHarness) {
     // Caution/amber: the window was tracked but dropped out (CEILING_UI.md).
     // Do not treat remainingPercent 100 as healthy (SBS-876).
     tone = "warn";
@@ -201,8 +202,9 @@ function ProviderPill({
   );
   const inlineReset = resetText ? inlineResetTime(resetText) : null;
   const { t } = useLocale();
-  const namedLabel =
-    hero.namedState === "unavailable"
+  const namedLabel = isHarness
+    ? provider.primary.resetDescription || "—"
+    : hero.namedState === "unavailable"
       ? t("WindowUnavailable")
       : hero.namedState === "notEnforced"
         ? t("NotCurrentlyEnforced")

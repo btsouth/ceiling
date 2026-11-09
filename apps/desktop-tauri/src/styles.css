@@ -10394,3 +10394,10 @@ body:has(.dashboard-shell) #root {
     display: none;
   }
 }
+
+.dsh-usage { width: 100%; min-width: 0; }
+.dsh-usage__rows { margin: 0; }
+.dsh-usage__row { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding: 7px 0; border-bottom: 1px solid var(--border-subtle); font-size: 12px; }
+.dsh-usage__row dt { color: var(--text-secondary); overflow-wrap: anywhere; }
+.dsh-usage__row dd { margin: 0; color: var(--text-primary); font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
+.dsh-usage__note { margin: 10px 0 0; color: var(--text-muted); font-size: 11px; line-height: 1.6; }
