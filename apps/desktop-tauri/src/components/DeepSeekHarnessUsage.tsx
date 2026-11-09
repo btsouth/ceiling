@@ -1,3 +1,5 @@
+import { useLocale } from "../hooks/useLocale";
+
 type StatisticRow = {
   id: string;
   title: string;
@@ -18,21 +20,22 @@ export default function DeepSeekHarnessUsage({ rows, compact = false }: {
   rows: readonly StatisticRow[];
   compact?: boolean;
 }) {
+  const { t } = useLocale();
   const visibleRows = compact
     ? harnessOverviewRows(rows)
     : rows.filter(({ id }) => id.startsWith("dsh-"));
   return (
-    <section className="menu-card__group dsh-usage" aria-label="DeepSeek Harness 用量统计">
+    <section className="menu-card__group dsh-usage" aria-label={t("DshUsageLabel")}>
       <dl className="dsh-usage__rows">
-        {visibleRows.length === 0 && <dt>正在读取用量…</dt>}
+        {visibleRows.length === 0 && <dt>{t("DshUsageLoading")}</dt>}
         {visibleRows.map((row) => (
           <div className="dsh-usage__row" key={row.id}>
             <dt>{row.title}</dt>
-            <dd>{row.window.resetDescription ?? "未报告"}</dd>
+            <dd>{row.window.resetDescription ?? t("DshNotReported")}</dd>
           </div>
         ))}
       </dl>
-      {!compact && <p className="dsh-usage__note">Token 来自本机 DSH 记录，余额来自官方账号。套餐上限和重置时间未提供。</p>}
+      {!compact && <p className="dsh-usage__note">{t("DshUsageNote")}</p>}
     </section>
   );
 }

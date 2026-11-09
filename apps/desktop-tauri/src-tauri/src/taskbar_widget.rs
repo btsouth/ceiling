@@ -4059,7 +4059,7 @@ mod tests {
             .extra_rate_windows
             .push(crate::commands::NamedRateWindowSnapshot {
                 id: "dsh-month".into(),
-                title: "本月 Token".into(),
+                title: "Tokens this month".into(),
                 window: rate_window(0.0, None),
                 amount: None,
             });

@@ -934,6 +934,11 @@ locale_keys! {
     DataSourceCopilot,
     DataSourceGemini,
     DataSourceGrok,
+    DataSourceDeepSeekHarness,
+    DshUsageLabel,
+    DshUsageLoading,
+    DshNotReported,
+    DshUsageNote,
     DataSourceGeneric,
 
     // First-run checklist (SOU-157)

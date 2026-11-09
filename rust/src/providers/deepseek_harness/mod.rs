@@ -81,17 +81,19 @@ impl Provider for DeepSeekHarnessProvider {
             .clone()
             .or_else(|| std::env::var_os("DSH_HOME").map(std::path::PathBuf::from))
             .or_else(|| dirs::home_dir().map(|p| p.join(".dsh")))
-            .ok_or_else(|| ProviderError::NotInstalled("无法定位 DSH 用户目录".into()))?;
+            .ok_or_else(|| {
+                ProviderError::NotInstalled("Could not find the DSH home folder".into())
+            })?;
         if !home.exists() {
             return Err(ProviderError::NotInstalled(
-                "未找到 DeepSeek Harness，请先运行并登录".into(),
+                "DeepSeek Harness not found. Run it and sign in first".into(),
             ));
         }
         let scan_home = home.clone();
         let scan =
             tokio::task::spawn_blocking(move || logs::scan_home(&scan_home, chrono::Local::now()))
                 .await
-                .map_err(|_| ProviderError::Other("DSH 用量读取任务未完成".into()))?;
+                .map_err(|_| ProviderError::Other("The DSH usage scan did not finish".into()))?;
         let wallets = account::fetch_wallets(&home).await;
         let headline = wallets
             .as_ref()
@@ -103,14 +105,14 @@ impl Provider for DeepSeekHarnessProvider {
                     .ok()
                     .map(|s| format!("{} tok", count(s.today.total)))
             })
-            .unwrap_or_else(|| "暂不可用".into());
+            .unwrap_or_else(|| "Unavailable".into());
         let mut usage =
             UsageSnapshot::new(RateWindow::with_details(0.0, None, None, Some(headline)))
-                .with_login_method("本机 DSH · 官方账号")
+                .with_login_method("Local DSH · DeepSeek account")
                 .with_unavailable_rate_window(
                     "dsh-usage",
                     "DSH",
-                    "账号没有提供套餐上限和重置时间；以下为实际记录的统计",
+                    "The account reports no plan limit or reset time; these are recorded totals",
                 );
         match wallets {
             Ok(wallets) => {
@@ -118,7 +120,7 @@ impl Provider for DeepSeekHarnessProvider {
                     usage = row(
                         usage,
                         format!("dsh-balance-{}", w.currency),
-                        format!("充值余额（{}）", w.currency),
+                        format!("Topped-up balance ({})", w.currency),
                         money(&w),
                     );
                 }
@@ -126,50 +128,64 @@ impl Provider for DeepSeekHarnessProvider {
                     usage = row(
                         usage,
                         format!("dsh-bonus-{}", w.currency),
-                        format!("赠送余额（{}）", w.currency),
+                        format!("Bonus balance ({})", w.currency),
                         money(&w),
                     );
                 }
             }
-            Err(error) => usage = row(usage, "dsh-balance-status", "账户余额", error),
+            Err(error) => usage = row(usage, "dsh-balance-status", "Account balance", error),
         }
         match scan {
             Ok(s) => {
-                let prefix = if s.warnings.is_empty() { "" } else { "至少 " };
+                let prefix = if s.warnings.is_empty() {
+                    ""
+                } else {
+                    "At least "
+                };
                 usage = row(
                     usage,
                     "dsh-today",
-                    "今日 Token",
+                    "Tokens today",
                     format!("{prefix}{}", count(s.today.total)),
                 );
                 usage = row(
                     usage,
                     "dsh-month",
-                    "本月 Token",
+                    "Tokens this month",
                     format!("{prefix}{}", count(s.month.total)),
                 );
                 usage = row(
                     usage,
                     "dsh-input",
-                    "本月输入（未缓存）",
+                    "Input this month (uncached)",
                     count(s.month.input),
                 );
-                usage = row(usage, "dsh-output", "本月输出", count(s.month.output));
+                usage = row(
+                    usage,
+                    "dsh-output",
+                    "Output this month",
+                    count(s.month.output),
+                );
                 usage = row(
                     usage,
                     "dsh-cache",
-                    "本月缓存读取",
+                    "Cache reads this month",
                     count(s.month.cache_read),
                 );
                 if s.month.cache_write > 0 {
                     usage = row(
                         usage,
                         "dsh-cache-write",
-                        "本月缓存写入",
+                        "Cache writes this month",
                         count(s.month.cache_write),
                     );
                 }
-                usage = row(usage, "dsh-calls", "本月已记录调用", count(s.month.calls));
+                usage = row(
+                    usage,
+                    "dsh-calls",
+                    "Calls recorded this month",
+                    count(s.month.calls),
+                );
                 let mut models = s.models.into_iter().collect::<Vec<_>>();
                 models.sort_by_key(|(_, tokens)| std::cmp::Reverse(tokens.total));
                 for (index, (model, tokens)) in models.into_iter().enumerate() {
@@ -180,19 +196,27 @@ impl Provider for DeepSeekHarnessProvider {
                         count(tokens.total),
                     );
                 }
-                usage = row(usage, "dsh-sessions", "已读取本机会话", count(s.sessions));
+                usage = row(
+                    usage,
+                    "dsh-sessions",
+                    "Local sessions read",
+                    count(s.sessions),
+                );
                 if !s.warnings.is_empty() {
                     usage = row(
                         usage,
                         "dsh-log-status",
-                        "部分记录暂未计入",
-                        s.warnings.join("；"),
+                        "Some records not counted",
+                        s.warnings.join("; "),
                     );
                 }
             }
-            Err(error) => usage = row(usage, "dsh-log-status", "本地用量暂不可用", error),
+            Err(error) => usage = row(usage, "dsh-log-status", "Local usage unavailable", error),
         }
-        Ok(ProviderFetchResult::new(usage, "DSH 本地记录 + 官方账户"))
+        Ok(ProviderFetchResult::new(
+            usage,
+            "DSH local records + DeepSeek account",
+        ))
     }
 }
 #[cfg(test)]

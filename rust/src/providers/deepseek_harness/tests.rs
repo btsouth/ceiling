@@ -114,6 +114,19 @@ fn seeded_history_and_legacy_chunk_duplicate_are_excluded() {
 }
 
 #[test]
+fn usage_without_turn_or_step_is_skipped_with_a_warning() {
+    let mut no_step = message(1, "2026-11-05T01:00:00+08:00", 10, 20, 0);
+    no_step["data"].as_object_mut().unwrap().remove("step");
+    let mut no_turn = message(2, "2026-11-05T01:00:00+08:00", 1, 2, 0);
+    no_turn["data"].as_object_mut().unwrap().remove("turn");
+    let counted = message(3, "2026-11-05T01:00:00+08:00", 100, 200, 0);
+    let s = parse_log(&lines(&[header(0), no_step, no_turn, counted]), now()).unwrap();
+    assert_eq!(s.month.total, 300);
+    assert_eq!(s.month.calls, 1);
+    assert!(s.warnings.iter().any(|w| w.contains("turn or step")));
+}
+
+#[test]
 fn input_including_cache_is_normalized_from_reported_total() {
     let mut r = message(1, "2026-11-05T01:00:00+08:00", 100, 20, 60);
     r["data"]["usage"]["totalTokens"] = json!(120);

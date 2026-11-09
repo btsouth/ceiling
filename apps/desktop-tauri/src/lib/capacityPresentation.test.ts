@@ -66,7 +66,7 @@ describe("capacityPresentation", () => {
   it("never treats DSH token counters as quota windows", () => {
     const snap = provider({ providerId: "deepseekharness", primary: window(0),
       inactiveRateWindows: [{ id: "dsh-usage", title: "DSH", description: "No quota reported", state: "unavailable" }],
-      extraRateWindows: [{ id: "dsh-month", title: "本月 Token", window: window(0) }],
+      extraRateWindows: [{ id: "dsh-month", title: "Tokens this month", window: window(0) }],
     });
     expect(constrainingWindow(snap).namedState).toBe("unavailable");
     expect(allMeasuredWindows(snap)).toEqual([]);

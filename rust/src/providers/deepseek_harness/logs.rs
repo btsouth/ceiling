@@ -32,14 +32,16 @@ impl Counts {
         let number = |key: &str| -> Result<u64, String> {
             match value.get(key) {
                 None => Ok(0),
-                Some(v) => v.as_u64().ok_or_else(|| "用量记录包含无效数字".into()),
+                Some(v) => v
+                    .as_u64()
+                    .ok_or_else(|| "A usage record has an invalid number".into()),
             }
         };
         if !value.is_object()
             || value.get("inputTokens").is_none()
             || value.get("outputTokens").is_none()
         {
-            return Err("用量记录缺少输入或输出 Token".into());
+            return Err("A usage record is missing input or output tokens".into());
         }
         let input = number("inputTokens")?;
         let output = number("outputTokens")?;
@@ -59,7 +61,7 @@ impl Counts {
             .saturating_add(cache_read)
             .saturating_add(cache_write);
         if total < non_input {
-            return Err("用量总数与缓存数字不一致".into());
+            return Err("A usage total does not match its cache counts".into());
         }
         Ok(Self {
             input: total - non_input,
@@ -107,38 +109,45 @@ pub(super) fn parse_log(bytes: &[u8], now: DateTime<impl TimeZone>) -> Result<Su
     let end = if bytes.ends_with(b"\n") {
         bytes.len()
     } else {
-        s.warnings.push("正在写入的末尾记录暂未计入".into());
+        s.warnings
+            .push("The last record is still being written and was not counted".into());
         bytes
             .iter()
             .rposition(|&byte| byte == b'\n')
             .map_or(0, |i| i + 1)
     };
-    let text =
-        std::str::from_utf8(&bytes[..end]).map_err(|_| "会话记录不是有效 UTF-8".to_string())?;
+    let text = std::str::from_utf8(&bytes[..end])
+        .map_err(|_| "A session log is not valid UTF-8".to_string())?;
     let rows: Vec<Value> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| serde_json::from_str(l).map_err(|_| "会话记录含损坏的 JSON 行".to_string()))
+        .map(|l| {
+            serde_json::from_str(l).map_err(|_| "A session log has a corrupt JSON line".to_string())
+        })
         .collect::<Result<_, _>>()?;
-    let h = rows.first().ok_or("会话记录缺少头部")?;
-    let version = h["version"].as_u64().ok_or("会话记录缺少版本")?;
+    let h = rows.first().ok_or("A session log has no header")?;
+    let version = h["version"]
+        .as_u64()
+        .ok_or("A session log has no version")?;
     if h["type"] != "session" || version > 4 {
-        return Err("暂不支持此 DSH 会话格式".into());
+        return Err("This DSH session format is not supported yet".into());
     }
     let mut cut = h["seedLength"].as_u64().unwrap_or(0) as usize;
     if h["isSeeded"].as_bool() == Some(true) {
         cut = rows
             .iter()
             .rposition(|r| r["type"] == "session/end-seed")
-            .ok_or("继承的会话缺少边界，暂未统计以免重复")?;
+            .ok_or(
+                "A seeded session has no seed boundary, so it was skipped to avoid double counting",
+            )?;
     }
     if cut >= rows.len() {
-        return Err("会话继承边界无效".into());
+        return Err("A seeded session has an invalid seed boundary".into());
     }
     // Keep only one usage record per step: assembled usage takes precedence
     // over v0 streaming usage, and embedded stream copies are never traversed.
     let mut records = BTreeMap::<_, UsageRecord>::new();
-    let mut model = "未标注模型".to_string();
+    let mut model = "Unknown model".to_string();
     for (index, row) in rows.iter().enumerate().skip(1) {
         let kind = row["type"].as_str().unwrap_or("");
         let d = &row["data"];
@@ -168,12 +177,23 @@ pub(super) fn parse_log(bytes: &[u8], now: DateTime<impl TimeZone>) -> Result<Su
         let Some(usage) = usage else {
             continue;
         };
-        let time = row["time"].as_i64().ok_or("用量记录缺少时间")?;
-        let turn = d["turn"].as_u64().unwrap_or(0);
-        let step = d["step"]
-            .as_u64()
-            .unwrap_or(row["seq"].as_u64().unwrap_or(index as u64));
-        let key = (turn, step, family);
+        let time = row["time"].as_i64().ok_or("A usage record has no time")?;
+        let key = match (family, d["turn"].as_u64(), d["step"].as_u64()) {
+            ("compaction", turn, step) => (
+                turn.unwrap_or(0),
+                step.unwrap_or(row["seq"].as_u64().unwrap_or(index as u64)),
+                family,
+            ),
+            (_, Some(turn), Some(step)) => (turn, step, family),
+            // DSH writes turn and step on every model and attempt event. A
+            // record without them can't be matched to its step, so skip it
+            // instead of risking a double count.
+            _ => {
+                s.warnings
+                    .push("A usage record is missing its turn or step and was not counted".into());
+                continue;
+            }
+        };
         let counts = Counts::from_usage(usage)?;
         if records.get(&key).is_none_or(|old| priority >= old.priority) {
             records.insert(
@@ -196,10 +216,11 @@ pub(super) fn parse_log(bytes: &[u8], now: DateTime<impl TimeZone>) -> Result<Su
     } in records.into_values()
     {
         let date = DateTime::<Utc>::from_timestamp_millis(time)
-            .ok_or("用量记录时间无效")?
+            .ok_or("A usage record has an invalid time")?
             .with_timezone(&now.timezone());
         if date > now {
-            s.warnings.push("有未来时间的记录未计入".into());
+            s.warnings
+                .push("Records dated in the future were not counted".into());
             continue;
         }
         s.lifetime.add(&counts);
@@ -230,34 +251,40 @@ fn generation(name: &str) -> Option<u64> {
 pub(super) fn scan_home(home: &Path, now: DateTime<impl TimeZone>) -> Result<Summary, String> {
     let root = home.join("sessions");
     if !root.exists() {
-        return Err("未找到 DSH 会话目录，请先在 Harness 中进行一次对话".into());
+        return Err(
+            "No DSH sessions folder yet. Start a conversation in DeepSeek Harness first".into(),
+        );
     }
     let mut total = Summary::default();
-    for project in fs::read_dir(root).map_err(|_| "无法读取 DSH 会话目录")? {
-        let project = project.map_err(|_| "无法读取 DSH 项目")?;
+    for project in fs::read_dir(root).map_err(|_| "Could not read the DSH sessions folder")? {
+        let project = project.map_err(|_| "Could not read a DSH project")?;
         if !project
             .file_type()
-            .map_err(|_| "无法读取 DSH 项目")?
+            .map_err(|_| "Could not read a DSH project")?
             .is_dir()
         {
             continue;
         }
-        for session in fs::read_dir(project.path()).map_err(|_| "无法读取 DSH 项目目录")? {
-            let session = session.map_err(|_| "无法读取 DSH 会话")?;
+        for session in
+            fs::read_dir(project.path()).map_err(|_| "Could not read a DSH project folder")?
+        {
+            let session = session.map_err(|_| "Could not read a DSH session")?;
             if !session
                 .file_type()
-                .map_err(|_| "无法读取 DSH 会话")?
+                .map_err(|_| "Could not read a DSH session")?
                 .is_dir()
             {
                 continue;
             }
             let mut selected: Option<(u64, std::path::PathBuf)> = None;
             let mut ambiguous = false;
-            for file in fs::read_dir(session.path()).map_err(|_| "无法读取 DSH 会话目录")? {
-                let file = file.map_err(|_| "无法读取 DSH 会话文件")?;
+            for file in fs::read_dir(session.path())
+                .map_err(|_| "Could not read the DSH sessions folder")?
+            {
+                let file = file.map_err(|_| "Could not read a DSH session file")?;
                 if !file
                     .file_type()
-                    .map_err(|_| "无法读取 DSH 会话文件")?
+                    .map_err(|_| "Could not read a DSH session file")?
                     .is_file()
                 {
                     continue;
@@ -277,39 +304,44 @@ pub(super) fn scan_home(home: &Path, now: DateTime<impl TimeZone>) -> Result<Sum
             if ambiguous {
                 total
                     .warnings
-                    .push("一个会话存在同版本的多份记录，暂未计入".into());
+                    .push("A session has two logs of the same version and was not counted".into());
                 continue;
             }
             let result = (|| -> Result<Summary, String> {
-                let handle = fs::File::open(&file).map_err(|_| "会话文件无法打开")?;
-                if handle.metadata().map_err(|_| "会话文件无法读取")?.len() > MAX_LOG_BYTES
+                let handle =
+                    fs::File::open(&file).map_err(|_| "A session file could not be opened")?;
+                if handle
+                    .metadata()
+                    .map_err(|_| "A session file could not be read")?
+                    .len()
+                    > MAX_LOG_BYTES
                 {
-                    return Err("会话文件超过读取上限".into());
+                    return Err("A session file is over the size limit".into());
                 }
                 let mut decoded = Vec::new();
                 let mut torn = false;
                 if file.extension().is_some_and(|e| e == "zstd") {
-                    let decoder =
-                        zstd::stream::read::Decoder::new(handle).map_err(|_| "会话压缩头部损坏")?;
+                    let decoder = zstd::stream::read::Decoder::new(handle)
+                        .map_err(|_| "A compressed session file has a corrupt header")?;
                     if let Err(error) = decoder.take(MAX_LOG_BYTES + 1).read_to_end(&mut decoded) {
                         if error.kind() == ErrorKind::UnexpectedEof {
                             torn = true;
                         } else {
-                            return Err("会话压缩数据损坏".into());
+                            return Err("A compressed session file is corrupt".into());
                         }
                     }
                 } else {
                     handle
                         .take(MAX_LOG_BYTES + 1)
                         .read_to_end(&mut decoded)
-                        .map_err(|_| "会话文件读取失败")?;
+                        .map_err(|_| "A session file could not be read")?;
                 }
                 if decoded.len() as u64 > MAX_LOG_BYTES {
-                    return Err("会话解压后超过读取上限".into());
+                    return Err("A session file is over the size limit once decompressed".into());
                 }
                 let mut s = parse_log(&decoded, now.clone())?;
                 if torn {
-                    s.warnings.push("正在写入的压缩末尾暂未完全计入".into());
+                    s.warnings.push("The end of a compressed log is still being written and was not fully counted".into());
                 }
                 Ok(s)
             })();
@@ -322,7 +354,7 @@ pub(super) fn scan_home(home: &Path, now: DateTime<impl TimeZone>) -> Result<Sum
     total.warnings.sort();
     total.warnings.dedup();
     if total.sessions == 0 && !total.warnings.is_empty() {
-        return Err(total.warnings.join("；"));
+        return Err(total.warnings.join("; "));
     }
     Ok(total)
 }

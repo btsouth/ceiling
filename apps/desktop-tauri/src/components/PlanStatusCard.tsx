@@ -241,7 +241,7 @@ export default function PlanStatusCard({
   }
   if (isHarness) {
     for (const row of harnessOverviewRows(provider.extraRateWindows ?? [])) {
-      meterSummary.push(`${row.title} ${row.window.resetDescription ?? "未报告"}`);
+      meterSummary.push(`${row.title} ${row.window.resetDescription ?? t("DshNotReported")}`);
     }
   }
   const accessibleLabel = provider.error

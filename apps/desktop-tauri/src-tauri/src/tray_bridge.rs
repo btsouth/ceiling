@@ -530,6 +530,12 @@ fn provider_status_label_for_settings(
     settings: &Settings,
     lang: codexbar::settings::Language,
 ) -> (String, String) {
+    if let Some(headline) = recorded_totals_headline(snapshot) {
+        return (
+            snapshot.provider_id.clone(),
+            format!("{} {headline}", snapshot.display_name),
+        );
+    }
     let provider = ProviderId::from_cli_name(snapshot.provider_id.as_str());
     let preference = provider
         .map(|id| settings.get_provider_metric(id))
@@ -544,6 +550,20 @@ fn provider_status_label_for_settings(
         snapshot.provider_id.clone(),
         format!("{} {status}", snapshot.display_name),
     )
+}
+
+/// DeepSeek Harness reports wallet balances and recorded token counts, not a
+/// quota, so the tray shows its headline value instead of a percentage.
+fn recorded_totals_headline(snapshot: &crate::commands::ProviderUsageSnapshot) -> Option<&str> {
+    if snapshot.provider_id != "deepseekharness" {
+        return None;
+    }
+    snapshot
+        .primary
+        .reset_description
+        .as_deref()
+        .map(str::trim)
+        .filter(|headline| !headline.is_empty())
 }
 
 fn render_tray_icon_for_settings(
@@ -822,6 +842,13 @@ fn build_tooltip(
     let render_line = |s: &crate::commands::ProviderUsageSnapshot, detail: u8| -> String {
         if s.error.is_some() {
             return format!("{}  {}", s.display_name, error_label);
+        }
+        if let Some(headline) = recorded_totals_headline(s) {
+            let name = truncate_tooltip_text(&s.display_name, 12);
+            return match detail {
+                0 | 1 => format!("{name} · {headline}"),
+                _ => format!("{name} {headline}"),
+            };
         }
         let percent = display_metric_percent(s.primary.used_percent, show_as_used);
         let label = s
@@ -1528,6 +1555,24 @@ mod tests {
             tooltip,
             "Claude · Session (5h) · 13% used\nCodex · Weekly · 8% used"
         );
+    }
+
+    #[test]
+    fn deepseek_harness_tray_shows_its_headline_not_a_percentage() {
+        let mut dsh = fake_snapshot("deepseekharness", "DeepSeek Harness", 0.0);
+        dsh.primary.reset_description = Some("¥42.12".to_string());
+
+        let tooltip = build_tooltip(&[&dsh], codexbar::settings::Language::English, false);
+        let name = truncate_tooltip_text("DeepSeek Harness", 12);
+        assert_eq!(tooltip, format!("{name} · ¥42.12"));
+        assert!(!tooltip.contains('%'));
+
+        let (_, label) = provider_status_label_for_settings(
+            &dsh,
+            &Settings::default(),
+            codexbar::settings::Language::English,
+        );
+        assert_eq!(label, "DeepSeek Harness ¥42.12");
     }
 
     #[test]
