@@ -589,7 +589,19 @@ fn pick_tray_provider<'a>(
         return None;
     }
     if prefer_highest {
-        ok_snapshots.iter().copied().max_by(|a, b| {
+        // DeepSeek Harness always reports 0% because it has no quota, so it
+        // only wins when no provider with a real quota is available.
+        let quota: Vec<_> = ok_snapshots
+            .iter()
+            .copied()
+            .filter(|s| s.provider_id != "deepseekharness")
+            .collect();
+        let candidates = if quota.is_empty() {
+            ok_snapshots
+        } else {
+            &quota[..]
+        };
+        candidates.iter().copied().max_by(|a, b| {
             selected_tray_used_percents(a, settings)
                 .0
                 .partial_cmp(&selected_tray_used_percents(b, settings).0)
@@ -1408,6 +1420,20 @@ mod tests {
         let picked = pick_tray_provider(&refs, &settings, /* prefer_highest = */ true)
             .expect("highest mode should pick a provider");
         assert_eq!(picked.provider_id, "claude");
+    }
+
+    #[test]
+    fn pick_tray_provider_highest_skips_deepseek_harness_ties() {
+        let settings = Settings::default();
+        let codex = fake_snapshot("codex", "Codex", 0.0);
+        let dsh = fake_snapshot("deepseekharness", "DeepSeek Harness", 0.0);
+        let refs: Vec<&crate::commands::ProviderUsageSnapshot> = vec![&codex, &dsh];
+        let picked = pick_tray_provider(&refs, &settings, true).unwrap();
+        assert_eq!(picked.provider_id, "codex");
+
+        let only: Vec<&crate::commands::ProviderUsageSnapshot> = vec![&dsh];
+        let picked = pick_tray_provider(&only, &settings, true).unwrap();
+        assert_eq!(picked.provider_id, "deepseekharness");
     }
 
     #[test]

@@ -256,37 +256,50 @@ pub(super) fn scan_home(home: &Path, now: DateTime<impl TimeZone>) -> Result<Sum
         );
     }
     let mut total = Summary::default();
+    // One unreadable project, session or file is a warning, not a reason to
+    // drop every other session's counts.
+    macro_rules! or_warn {
+        ($result:expr, $message:expr) => {
+            match $result {
+                Ok(value) => value,
+                Err(_) => {
+                    total.warnings.push(String::from($message));
+                    continue;
+                }
+            }
+        };
+    }
     for project in fs::read_dir(root).map_err(|_| "Could not read the DSH sessions folder")? {
-        let project = project.map_err(|_| "Could not read a DSH project")?;
-        if !project
-            .file_type()
-            .map_err(|_| "Could not read a DSH project")?
-            .is_dir()
-        {
+        let project = or_warn!(project, "Could not read a DSH project");
+        if !or_warn!(project.file_type(), "Could not read a DSH project").is_dir() {
             continue;
         }
-        for session in
-            fs::read_dir(project.path()).map_err(|_| "Could not read a DSH project folder")?
-        {
-            let session = session.map_err(|_| "Could not read a DSH session")?;
-            if !session
-                .file_type()
-                .map_err(|_| "Could not read a DSH session")?
-                .is_dir()
-            {
+        let sessions = or_warn!(
+            fs::read_dir(project.path()),
+            "Could not read a DSH project folder"
+        );
+        for session in sessions {
+            let session = or_warn!(session, "Could not read a DSH session");
+            if !or_warn!(session.file_type(), "Could not read a DSH session").is_dir() {
                 continue;
             }
+            let files = or_warn!(
+                fs::read_dir(session.path()),
+                "Could not read a DSH session folder"
+            );
             let mut selected: Option<(u64, std::path::PathBuf)> = None;
             let mut ambiguous = false;
-            for file in fs::read_dir(session.path())
-                .map_err(|_| "Could not read the DSH sessions folder")?
-            {
-                let file = file.map_err(|_| "Could not read a DSH session file")?;
-                if !file
-                    .file_type()
-                    .map_err(|_| "Could not read a DSH session file")?
-                    .is_file()
-                {
+            let mut unreadable = false;
+            for file in files {
+                let Ok(file) = file else {
+                    unreadable = true;
+                    break;
+                };
+                let Ok(file_type) = file.file_type() else {
+                    unreadable = true;
+                    break;
+                };
+                if !file_type.is_file() {
                     continue;
                 }
                 if let Some(v) = generation(&file.file_name().to_string_lossy()) {
@@ -297,6 +310,14 @@ pub(super) fn scan_home(home: &Path, now: DateTime<impl TimeZone>) -> Result<Sum
                         ambiguous = true;
                     }
                 }
+            }
+            // A missing entry could be the newest generation, so counting an
+            // older one could show stale totals.
+            if unreadable {
+                total.warnings.push(
+                    "A DSH session file could not be read, so its session was not counted".into(),
+                );
+                continue;
             }
             let Some((_, file)) = selected else {
                 continue;
