@@ -171,3 +171,31 @@ fn unsafe_issuers_and_invalid_money_are_rejected_without_leaking_secrets() {
     assert!(parse_wallets(&json!({"code":40003})).is_err());
     assert!(parse_wallets(&json!({"code":0,"data":{"biz_code":0,"biz_data":{"normal_wallets":[{"currency":"CNY","balance":"NaN"}],"bonus_wallets":[]}}})).is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_session_folder_does_not_hide_the_others() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let good = tmp.path().join("sessions/project/good");
+    let locked = tmp.path().join("sessions/project/locked");
+    fs::create_dir_all(&good).unwrap();
+    fs::create_dir_all(&locked).unwrap();
+    let rows = [
+        header(4),
+        message(1, "2026-11-05T01:00:00+08:00", 10, 20, 0),
+    ];
+    fs::write(good.join("session.jsonl"), lines(&rows)).unwrap();
+    fs::write(locked.join("session.jsonl"), lines(&rows)).unwrap();
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+    let readable_anyway = fs::read_dir(&locked).is_ok();
+    let result = scan_home(tmp.path(), now());
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+    if readable_anyway {
+        return; // Running as root; permissions can't be tested here.
+    }
+    let s = result.unwrap();
+    assert_eq!(s.sessions, 1);
+    assert_eq!(s.month.total, 30);
+    assert!(s.warnings.iter().any(|w| w.contains("session folder")));
+}
