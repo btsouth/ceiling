@@ -86,7 +86,7 @@ dirs = "7"
 open = "5"
 fluent-templates = "0.15"
 unic-langid = "0.9"
-rmcp = { version = "3.5.1", features = ["server", "transport-io"] }
+rmcp = { version = "3.9.0", features = ["server", "transport-io"] }
 
 # Unix-only: O_NOFOLLOW and the owner check on the launch-log directory
 [target.'cfg(unix)'.dependencies]
