@@ -929,7 +929,7 @@ mod tests {
             "OAuth token invalid or expired. Run `claude /login` to re-authenticate.".to_string(),
         ));
         assert!(rejected.to_string().contains("Open Claude Desktop"));
-        assert!(!rejected.to_string().contains("Run `claude`"));
+        assert!(!rejected.to_string().contains("Run `claude /login`"));
 
         for untouched in [
             ClaudeOAuthFetcher::rate_limited_error(Duration::from_secs(5)),

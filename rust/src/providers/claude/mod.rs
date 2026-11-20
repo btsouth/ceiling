@@ -708,7 +708,7 @@ impl ClaudeProvider {
         let Some(token) = desktop_token::load_desktop_token() else {
             return desktop_token::has_saved_sign_in().then(|| {
                 Err(ProviderError::OAuth(
-                    "Claude Desktop has no current sign-in. Open Claude Desktop and sign in, or run `claude` to use Claude Code."
+                    "Claude Desktop has no current sign-in. Open Claude Desktop and sign in, or run `claude /login` to use Claude Code."
                         .to_string(),
                 ))
             });
@@ -961,7 +961,7 @@ fn scoped_oauth_error(
     // Keep this free of "Claude OAuth credentials not found": the desktop
     // bridge rewrites that phrase into a generic sign-in hint.
     ProviderError::OAuth(format!(
-        "No Claude Code sign-in found in {}. Only the default Claude card can use the Claude Desktop sign-in. To fix this, run `claude` with CLAUDE_CONFIG_DIR set to that directory and sign in, or remove the account in Ceiling.",
+        "No Claude Code sign-in found in {}. Only the default Claude card can use the Claude Desktop sign-in. To fix this, run `claude /login` with CLAUDE_CONFIG_DIR set to that directory and sign in, or remove the account in Ceiling.",
         dir.display()
     ))
 }
@@ -1893,7 +1893,7 @@ Resets Dec 24 at 3:59pm (Europe/Paris)
         assert_eq!(
             message,
             format!(
-                "OAuth error: No Claude Code sign-in found in {}. Only the default Claude card can use the Claude Desktop sign-in. To fix this, run `claude` with CLAUDE_CONFIG_DIR set to that directory and sign in, or remove the account in Ceiling.",
+                "OAuth error: No Claude Code sign-in found in {}. Only the default Claude card can use the Claude Desktop sign-in. To fix this, run `claude /login` with CLAUDE_CONFIG_DIR set to that directory and sign in, or remove the account in Ceiling.",
                 dir.display()
             )
         );
