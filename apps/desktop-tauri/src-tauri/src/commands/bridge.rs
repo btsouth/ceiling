@@ -609,6 +609,10 @@ pub(crate) fn friendly_provider_error(id: ProviderId, error: &str) -> String {
             .trim_start_matches('.')
             .trim()
             .replace(
+                "OAuth: OAuth error: Claude OAuth credentials not found. Run `claude /login` to authenticate.",
+                "OAuth: sign-in not found",
+            )
+            .replace(
                 "OAuth: OAuth error: Claude OAuth credentials not found. Run `claude` to authenticate.",
                 "OAuth: sign-in not found",
             )
@@ -622,7 +626,7 @@ pub(crate) fn friendly_provider_error(id: ProviderId, error: &str) -> String {
             )
             .replace("CLI: Provider not installed:", "CLI: not installed:");
         return format!(
-            "Claude capacity could not be loaded ({detail}). Run `claude` once in a terminal, then refresh Claude in Ceiling. {CLAUDE_CHARTS_WITHOUT_CAPACITY_NOTE}"
+            "Claude capacity could not be loaded ({detail}). Run `claude /login` in a terminal, then refresh Claude in Ceiling. {CLAUDE_CHARTS_WITHOUT_CAPACITY_NOTE}"
         );
     }
 
@@ -636,19 +640,19 @@ pub(crate) fn friendly_provider_error(id: ProviderId, error: &str) -> String {
 
     if lower.contains("claude oauth credentials not found") {
         return format!(
-            "Claude CLI sign-in was not found. Run `claude` once in a terminal, then refresh Claude in Ceiling. {CLAUDE_CHARTS_WITHOUT_CAPACITY_NOTE}"
+            "Claude CLI sign-in was not found. Run `claude /login` in a terminal, then refresh Claude in Ceiling. {CLAUDE_CHARTS_WITHOUT_CAPACITY_NOTE}"
         );
     }
 
     if lower.contains("oauth token expired") || lower.contains("token invalid or expired") {
         return format!(
-            "Claude sign-in expired. Run `claude` to refresh your Claude Code login, then refresh Claude in Ceiling. {CLAUDE_CHARTS_WITHOUT_CAPACITY_NOTE}"
+            "Claude sign-in expired. Run `claude /login` to refresh your Claude Code login, then refresh Claude in Ceiling. {CLAUDE_CHARTS_WITHOUT_CAPACITY_NOTE}"
         );
     }
 
     if trimmed == "Authentication required" {
         return format!(
-            "Claude needs a CLI sign-in before Ceiling can read capacity. Run `claude` once, then refresh Claude in Ceiling. {CLAUDE_CHARTS_WITHOUT_CAPACITY_NOTE}"
+            "Claude needs a CLI sign-in before Ceiling can read capacity. Run `claude /login` in a terminal, then refresh Claude in Ceiling. {CLAUDE_CHARTS_WITHOUT_CAPACITY_NOTE}"
         );
     }
 

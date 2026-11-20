@@ -719,7 +719,7 @@ impl ClaudeProvider {
         if !fits {
             tracing::debug!("Claude Desktop's account does not fit the default Claude card");
             return Some(Err(ProviderError::OAuth(
-                "Claude Desktop is signed in to a different account than this card. Run `claude` to sign this account in to Claude Code."
+                "Claude Desktop is signed in to a different account than this card. Run `claude /login` to sign this account in to Claude Code."
                     .to_string(),
             )));
         }
@@ -1931,13 +1931,13 @@ Resets Dec 24 at 3:59pm (Europe/Paris)
         let dir = std::path::Path::new(r"C:\Users\person\.claude-work");
         let err = scoped_oauth_error(
             dir,
-            ProviderError::OAuth("OAuth token expired. Run `claude` to refresh.".to_string()),
+            ProviderError::OAuth("OAuth token expired. Run `claude /login` to refresh.".to_string()),
             false,
         );
 
         assert_eq!(
             err.to_string(),
-            "OAuth error: OAuth token expired. Run `claude` to refresh."
+            "OAuth error: OAuth token expired. Run `claude /login` to refresh."
         );
     }
 
