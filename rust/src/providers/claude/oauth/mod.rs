@@ -351,7 +351,7 @@ impl ClaudeOAuthFetcher {
     ) -> Result<OAuthUsageResponse, ProviderError> {
         if credentials.is_expired() {
             return Err(ProviderError::OAuth(
-                "OAuth token expired. Run `claude` to refresh.".to_string(),
+                "OAuth token expired. Run `claude /login` to refresh.".to_string(),
             ));
         }
 
@@ -387,7 +387,8 @@ impl ClaudeOAuthFetcher {
 
             if status.as_u16() == 401 {
                 return Err(ProviderError::OAuth(
-                    "OAuth token invalid or expired. Run `claude` to re-authenticate.".to_string(),
+                    "OAuth token invalid or expired. Run `claude /login` to re-authenticate."
+                        .to_string(),
                 ));
             }
 
@@ -925,10 +926,10 @@ mod tests {
         use crate::core::ProviderError;
 
         let rejected = desktop_token_error(ProviderError::OAuth(
-            "OAuth token invalid or expired. Run `claude` to re-authenticate.".to_string(),
+            "OAuth token invalid or expired. Run `claude /login` to re-authenticate.".to_string(),
         ));
         assert!(rejected.to_string().contains("Open Claude Desktop"));
-        assert!(!rejected.to_string().contains("Run `claude`"));
+        assert!(!rejected.to_string().contains("Run `claude /login`"));
 
         for untouched in [
             ClaudeOAuthFetcher::rate_limited_error(Duration::from_secs(5)),

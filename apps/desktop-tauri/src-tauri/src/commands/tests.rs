@@ -1381,12 +1381,12 @@ fn claude_error_message_removes_upstream_swift_cancellation() {
 fn claude_error_message_shows_desktop_guidance_as_written() {
     let message = super::friendly_provider_error(
         ProviderId::Claude,
-        "OAuth error: Claude Desktop has no current sign-in. Open Claude Desktop and sign in, or run `claude` to use Claude Code.",
+        "OAuth error: Claude Desktop has no current sign-in. Open Claude Desktop and sign in, or run `claude /login` to use Claude Code.",
     );
 
     assert_eq!(
         message,
-        "Claude Desktop has no current sign-in. Open Claude Desktop and sign in, or run `claude` to use Claude Code."
+        "Claude Desktop has no current sign-in. Open Claude Desktop and sign in, or run `claude /login` to use Claude Code."
     );
 }
 
@@ -1407,12 +1407,12 @@ fn claude_error_message_shows_directory_guidance_as_written() {
 fn claude_error_message_explains_missing_sign_in() {
     let message = super::friendly_provider_error(
         ProviderId::Claude,
-        "OAuth error: Claude OAuth credentials not found. Run `claude` to authenticate.",
+        "OAuth error: Claude OAuth credentials not found. Run `claude /login` to authenticate.",
     );
 
     assert_eq!(
         message,
-        "Claude CLI sign-in was not found. Run `claude` once in a terminal, then refresh Claude in Ceiling. Charts can still show local session spend without live capacity."
+        "Claude CLI sign-in was not found. Run `claude /login` in a terminal, then refresh Claude in Ceiling. Charts can still show local session spend without live capacity."
     );
 }
 
@@ -1420,7 +1420,7 @@ fn claude_error_message_explains_missing_sign_in() {
 fn claude_multi_source_failure_keeps_all_sources_not_oauth_only() {
     let message = super::friendly_provider_error(
         ProviderId::Claude,
-        "Claude usage failed from all configured sources. OAuth: OAuth error: Claude OAuth credentials not found. Run `claude` to authenticate.; Web: No cookies available for web API; CLI: Provider not installed: claude not found",
+        "Claude usage failed from all configured sources. OAuth: OAuth error: Claude OAuth credentials not found. Run `claude /login` to authenticate.; Web: No cookies available for web API; CLI: Provider not installed: claude not found",
     );
 
     assert!(
@@ -1440,7 +1440,7 @@ fn claude_multi_source_failure_keeps_all_sources_not_oauth_only() {
         "expected shortened CLI detail, got: {message}"
     );
     assert!(
-        message.contains("Run `claude` once in a terminal"),
+        message.contains("Run `claude /login` in a terminal"),
         "expected CLI fix hint, got: {message}"
     );
     assert!(
@@ -1457,7 +1457,7 @@ fn claude_multi_source_failure_keeps_all_sources_not_oauth_only() {
 fn claude_auth_required_does_not_suggest_cookies() {
     let message = super::friendly_provider_error(ProviderId::Claude, "Authentication required");
 
-    assert!(message.contains("CLI sign-in") || message.contains("Run `claude`"));
+    assert!(message.contains("CLI sign-in") || message.contains("Run `claude /login`"));
     assert!(
         !message.to_lowercase().contains("cookie"),
         "must not recommend browser cookies: {message}"
@@ -1469,12 +1469,12 @@ fn claude_auth_required_does_not_suggest_cookies() {
 fn non_claude_error_message_is_preserved() {
     let message = super::friendly_provider_error(
         ProviderId::Codex,
-        "OAuth error: Claude OAuth credentials not found. Run `claude` to authenticate.",
+        "OAuth error: Claude OAuth credentials not found. Run `claude /login` to authenticate.",
     );
 
     assert_eq!(
         message,
-        "OAuth error: Claude OAuth credentials not found. Run `claude` to authenticate."
+        "OAuth error: Claude OAuth credentials not found. Run `claude /login` to authenticate."
     );
 }
 

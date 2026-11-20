@@ -168,7 +168,7 @@ fn load_from_file(config_dir: Option<&Path>) -> Result<ClaudeOAuthCredentials, P
 
     if !path.exists() {
         return Err(ProviderError::OAuth(format!(
-            "Claude OAuth credentials not found in {}. Run `claude` to authenticate.",
+            "Claude OAuth credentials not found in {}. Run `claude /login` to authenticate.",
             path.display()
         )));
     }
@@ -301,14 +301,14 @@ fn parse_credentials_json(content: &str) -> Result<ClaudeOAuthCredentials, Provi
 fn credentials_from_oauth_data(oauth: OAuthData) -> Result<ClaudeOAuthCredentials, ProviderError> {
     let access_token = oauth.access_token.ok_or_else(|| {
         ProviderError::OAuth(
-            "Claude OAuth access token missing. Run `claude` to authenticate.".to_string(),
+            "Claude OAuth access token missing. Run `claude /login` to authenticate.".to_string(),
         )
     })?;
 
     let access_token = access_token.trim().to_string();
     if access_token.is_empty() {
         return Err(ProviderError::OAuth(
-            "Claude OAuth access token is empty. Run `claude` to authenticate.".to_string(),
+            "Claude OAuth access token is empty. Run `claude /login` to authenticate.".to_string(),
         ));
     }
 
