@@ -387,7 +387,8 @@ impl ClaudeOAuthFetcher {
 
             if status.as_u16() == 401 {
                 return Err(ProviderError::OAuth(
-                    "OAuth token invalid or expired. Run `claude /login` to re-authenticate.".to_string(),
+                    "OAuth token invalid or expired. Run `claude /login` to re-authenticate."
+                        .to_string(),
                 ));
             }
 

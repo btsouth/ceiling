@@ -1931,7 +1931,9 @@ Resets Dec 24 at 3:59pm (Europe/Paris)
         let dir = std::path::Path::new(r"C:\Users\person\.claude-work");
         let err = scoped_oauth_error(
             dir,
-            ProviderError::OAuth("OAuth token expired. Run `claude /login` to refresh.".to_string()),
+            ProviderError::OAuth(
+                "OAuth token expired. Run `claude /login` to refresh.".to_string(),
+            ),
             false,
         );
 
