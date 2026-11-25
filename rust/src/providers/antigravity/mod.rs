@@ -20,6 +20,7 @@ use crate::core::{
 const NOT_RUNNING_MESSAGE: &str = "Antigravity language server not running. Start Google Antigravity or run `agy`, sign in, then retry.";
 const NOT_SIGNED_IN_MESSAGE: &str = "Antigravity is not signed in. Run agy, sign in, then retry.";
 const NO_QUOTA_MESSAGE: &str = "Antigravity returned no usable quota data.";
+const DESKTOP_HOST_BRIDGE_MESSAGE: &str = "Antigravity Desktop is running, but its local authentication method is unavailable to Ceiling. View usage in Antigravity Settings > Models.";
 pub(crate) const CLI_TOKEN_REQUIRED_MESSAGE: &str = "This version of the Antigravity CLI requires a local access token that Ceiling cannot read. Start agy with `agy --csrf_token <any random value>` (PowerShell: agy --csrf_token (New-Guid)), then retry.";
 
 /// Antigravity provider
@@ -171,6 +172,7 @@ impl AntigravityProvider {
         static EXT_CSRF_RE: OnceLock<Regex> = OnceLock::new();
         static EXT_PORT_RE: OnceLock<Regex> = OnceLock::new();
         static HTTPS_PORT_RE: OnceLock<Regex> = OnceLock::new();
+        static ANTIGRAVITY_IDE_RE: OnceLock<Regex> = OnceLock::new();
         // Accept both `--flag value` and `--flag=value` forms.
         let csrf_regex = CSRF_RE.get_or_init(|| {
             Regex::new(r#"(?:^|\s)--csrf_token(?:=|\s+)(?:"([^"\r\n]+)"|([^\s"]+))"#)
@@ -187,6 +189,12 @@ impl AntigravityProvider {
         });
         let https_port_regex = HTTPS_PORT_RE
             .get_or_init(|| Regex::new(r"--https_server_port(?:=|\s+)(\d+)").expect("valid regex"));
+        let antigravity_ide_regex = ANTIGRAVITY_IDE_RE.get_or_init(|| {
+            Regex::new(
+                r#"(?:^|\s)--override_ide_name(?:=|\s+)(?:antigravity|"antigravity")(?:\s|$)"#,
+            )
+            .expect("valid regex")
+        });
 
         let mut processes = Vec::new();
         for raw_line in stdout.lines() {
@@ -249,17 +257,24 @@ impl AntigravityProvider {
                 continue;
             }
 
-            // IDE language_server requires CSRF. Tokenless IDE matches are skipped so a
-            // later valid IDE (or CLI) candidate can still be found.
-            // Keep tokenless CLI candidates so older versions still work.
+            // Keep known host-bridge launches for diagnostics. They lack the
+            // command-line credential used by the legacy desktop integration.
+            let uses_desktop_host_bridge = !is_cli
+                && csrf_token.is_none()
+                && antigravity_ide_regex.is_match(line)
+                && line
+                    .split_ascii_whitespace()
+                    .any(|arg| arg == "--read_host_bridge_token_from_stdin");
             let token = match (is_cli, csrf_token) {
                 (_, Some(token)) => token,
                 (true, None) => String::new(),
+                (false, None) if uses_desktop_host_bridge => String::new(),
                 (false, None) => continue,
             };
 
             processes.push(ProcessInfo {
                 is_cli,
+                uses_desktop_host_bridge,
                 csrf_token: token,
                 extension_server_csrf_token: ext_csrf_token,
                 extension_port: port,
@@ -357,7 +372,12 @@ impl AntigravityProvider {
             .map_err(|e| ProviderError::Other(e.to_string()))?;
 
         let mut failure = None;
+        let mut desktop_host_bridge_detected = false;
         for process in processes {
+            if process.uses_desktop_host_bridge {
+                desktop_host_bridge_detected = true;
+                continue;
+            }
             let urls: Vec<String> = Self::api_port_candidates(&process)
                 .into_iter()
                 .map(|port| format!("https://127.0.0.1:{port}"))
@@ -374,6 +394,9 @@ impl AntigravityProvider {
         }
         Err(match failure {
             Some((error, process)) => Self::user_facing_failure(&process, error),
+            None if desktop_host_bridge_detected => {
+                ProviderError::OAuth(DESKTOP_HOST_BRIDGE_MESSAGE.into())
+            }
             None => ProviderError::Other("Could not find Antigravity API port".into()),
         })
     }
@@ -778,6 +801,7 @@ impl Provider for AntigravityProvider {
 
 struct ProcessInfo {
     is_cli: bool,
+    uses_desktop_host_bridge: bool,
     csrf_token: String,
     extension_server_csrf_token: Option<String>,
     extension_port: u16,
@@ -1518,6 +1542,22 @@ mod tests {
         // IDE without CSRF must not be accepted (would shadow a later valid server).
         let output = r"9	C:\Programs\Antigravity\resources\bin\language_server.exe --standalone --override_ide_name antigravity --https_server_port 0";
 
+        assert!(AntigravityProvider::parse_process_info(output).is_none());
+    }
+
+    #[test]
+    fn detects_desktop_host_bridge_alongside_a_cli_candidate() {
+        let output = "9\tlanguage_server.exe\t\"C:\\Program Files\\Antigravity\\resources\\bin\\language_server.exe\" --override_ide_name antigravity --https_server_port 0 --read_host_bridge_token_from_stdin\n199364\tagy.exe\tagy.exe";
+        let processes = AntigravityProvider::parse_process_infos(output);
+        assert_eq!(processes.len(), 2);
+        assert!(processes[0].uses_desktop_host_bridge);
+        assert!(!processes[1].uses_desktop_host_bridge);
+        assert!(processes[1].is_cli);
+    }
+
+    #[test]
+    fn ignores_host_bridge_for_another_ide() {
+        let output = "9\tlanguage_server.exe\tC:\\OtherIDE\\language_server.exe --override_ide_name other --https_server_port 0 --read_host_bridge_token_from_stdin";
         assert!(AntigravityProvider::parse_process_info(output).is_none());
     }
 
