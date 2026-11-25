@@ -81,7 +81,6 @@ portable-pty = "0.9"
 
 # Dirs - standard directories
 dirs = "7"
-tempfile = "3"
 
 # Open URLs in browser
 open = "5"
@@ -95,6 +94,8 @@ libc = "0.2"
 
 # Windows-only
 [target.'cfg(windows)'.dependencies]
+# Scratch workspace for the Antigravity CLI quota check
+tempfile = "3"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -126,6 +127,7 @@ chrono = "0.4"
 
 [dev-dependencies]
 tokio-test = "0.4"
+tempfile = "3"
 mockito = "1.4"
 
 [[bin]]

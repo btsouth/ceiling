@@ -2145,3 +2145,77 @@ fn personal_gemini_migration_preserves_other_providers_and_is_idempotent() {
     settings.migrate_personal_gemini();
     assert!(settings.enabled_providers.contains("gemini"));
 }
+
+#[test]
+fn personal_gemini_migration_keeps_inline_credentials_when_credential_migration_fails() {
+    let original = r#"{
+        "enabled_providers": ["gemini"],
+        "provider_configs": {
+            "openrouter": { "api_token": "inline-secret" }
+        }
+    }"#;
+    let disk = std::cell::RefCell::new(original.to_string());
+    let loaded: Settings = serde_json::from_str(&disk.borrow()).unwrap();
+
+    let settings = loaded.apply_load_migrations(
+        true,
+        |_| Some(Err(anyhow::anyhow!("secure store unavailable"))),
+        |settings| {
+            *disk.borrow_mut() = serde_json::to_string(settings)?;
+            Ok(())
+        },
+    );
+
+    assert_eq!(
+        *disk.borrow(),
+        original,
+        "settings.json must not be rewritten"
+    );
+    let on_disk: Settings = serde_json::from_str(&disk.borrow()).unwrap();
+    assert_eq!(
+        on_disk
+            .provider_configs
+            .get(&ProviderId::OpenRouter)
+            .and_then(|config| config.api_token.as_deref()),
+        Some("inline-secret")
+    );
+    assert!(settings.has_legacy_credentials());
+    assert!(!settings.personal_gemini_migrated);
+    assert!(settings.enabled_providers.contains("gemini"));
+}
+
+#[test]
+fn personal_gemini_migration_saves_after_credentials_reach_the_secure_store() {
+    let loaded: Settings = serde_json::from_str(
+        r#"{
+            "enabled_providers": ["gemini"],
+            "provider_configs": {
+                "openrouter": { "api_token": "inline-secret" }
+            }
+        }"#,
+    )
+    .unwrap();
+    let writes = std::cell::RefCell::new(Vec::new());
+
+    let settings = loaded.apply_load_migrations(
+        true,
+        |settings| {
+            let mut sanitized = settings.clone();
+            for config in sanitized.provider_configs.values_mut() {
+                config.api_token = None;
+            }
+            Some(Ok(sanitized))
+        },
+        |settings| {
+            writes.borrow_mut().push(serde_json::to_value(settings)?);
+            Ok(())
+        },
+    );
+
+    let writes = writes.borrow();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[1]["personal_gemini_migrated"], true);
+    assert!(settings.personal_gemini_migrated);
+    assert!(settings.enabled_providers.contains("antigravity"));
+    assert!(!settings.enabled_providers.contains("gemini"));
+}

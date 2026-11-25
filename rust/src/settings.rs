@@ -913,28 +913,51 @@ impl Settings {
 
     /// Load and migrate settings while the caller holds the state write lock.
     fn load_unlocked() -> Self {
-        let (mut settings, _) = Self::load_from_disk(true);
+        let (settings, _) = Self::load_from_disk(true);
+        let migrate_personal_gemini = settings.needs_personal_gemini_migration();
+        settings.apply_load_migrations(
+            migrate_personal_gemini,
+            Self::migrate_legacy_credentials,
+            Self::write_to_disk,
+        )
+    }
 
-        if let Some(sanitized) = settings.migrate_legacy_credentials() {
+    /// Run the migrations that can write `settings.json` during a load.
+    ///
+    /// Inline credentials are `skip_serializing`, so any write while they are
+    /// still present would delete them. The personal Gemini migration only
+    /// saves once the credential migration has left nothing inline; otherwise
+    /// it waits for a later load.
+    fn apply_load_migrations(
+        mut self,
+        migrate_personal_gemini: bool,
+        migrate_credentials: impl FnOnce(&Self) -> Option<anyhow::Result<Self>>,
+        write: impl Fn(&Self) -> anyhow::Result<()>,
+    ) -> Self {
+        if let Some(sanitized) = migrate_credentials(&self) {
             match sanitized.and_then(|sanitized| {
-                Self::write_to_disk(&sanitized)?;
+                write(&sanitized)?;
                 Ok(sanitized)
             }) {
-                Ok(sanitized) => settings = sanitized,
+                Ok(sanitized) => self = sanitized,
                 Err(error) => {
                     tracing::warn!(%error, "Failed to migrate legacy settings credentials");
                 }
             }
         }
 
-        if settings.needs_personal_gemini_migration() {
-            settings.migrate_personal_gemini();
-            if let Err(error) = Self::write_to_disk(&settings) {
-                tracing::warn!(%error, "Failed to save Antigravity provider migration");
+        if migrate_personal_gemini && !self.has_legacy_credentials() {
+            let mut migrated = self.clone();
+            migrated.migrate_personal_gemini();
+            match write(&migrated) {
+                Ok(()) => self = migrated,
+                Err(error) => {
+                    tracing::warn!(%error, "Failed to save Antigravity provider migration");
+                }
             }
         }
 
-        settings
+        self
     }
 
     fn needs_personal_gemini_migration(&self) -> bool {
