@@ -81,6 +81,7 @@ portable-pty = "0.9"
 
 # Dirs - standard directories
 dirs = "7"
+tempfile = "3"
 
 # Open URLs in browser
 open = "5"
@@ -125,7 +126,6 @@ chrono = "0.4"
 
 [dev-dependencies]
 tokio-test = "0.4"
-tempfile = "3"
 mockito = "1.4"
 
 [[bin]]

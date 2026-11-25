@@ -2119,3 +2119,29 @@ fn test_uninstaller_matches_the_start_at_login_value() {
         );
     }
 }
+
+#[test]
+fn personal_gemini_migration_preserves_other_providers_and_is_idempotent() {
+    let mut settings = Settings {
+        enabled_providers: ["codex", "gemini"].into_iter().map(str::to_owned).collect(),
+        provider_order: vec!["gemini".into(), "codex".into(), "antigravity".into()],
+        float_bar_provider_ids: vec!["codex".into(), "gemini".into()],
+        provider_metrics: [("gemini".into(), MetricPreference::Weekly)].into(),
+        ..Settings::default()
+    };
+    settings.migrate_personal_gemini();
+    assert!(!settings.enabled_providers.contains("gemini"));
+    assert!(settings.enabled_providers.contains("antigravity"));
+    assert_eq!(settings.provider_order, ["antigravity", "codex"]);
+    assert_eq!(settings.float_bar_provider_ids, ["codex", "antigravity"]);
+    assert_eq!(
+        settings.get_provider_metric(ProviderId::Antigravity),
+        MetricPreference::Weekly
+    );
+
+    let saved = serde_json::to_string(&settings).unwrap();
+    let mut settings: Settings = serde_json::from_str(&saved).unwrap();
+    settings.enable_provider(ProviderId::Gemini);
+    settings.migrate_personal_gemini();
+    assert!(settings.enabled_providers.contains("gemini"));
+}
