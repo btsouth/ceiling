@@ -33,10 +33,22 @@ browser cookie databases; website cookies must be copied explicitly. See
 | **Codex / OpenAI** | The OAuth token from your Codex CLI (`~/.codex/auth.json`) plus local `~/.codex/sessions` logs | chatgpt.com |
 | **Cursor** | Your signed-in Cursor IDE session (`state.vscdb`), or cursor.com cookies you provide. On-demand is billed spend; plan/included dollars are Cursor internal units, not an invoice. Grok Bot's weekly allowance, its on-demand spend and The X Subscription's shared weekly pool come from the same cursor.com session. Local Composer tracking (`~/.cursor/ai-tracking`) is activity share, not tokens or spend. | cursor.com |
 | **GitHub Copilot** | Your GitHub CLI / Git Credential Manager token (or a device-flow sign-in) | api.github.com, or your GitHub Enterprise host |
-| **Gemini** | The OAuth token from the Gemini CLI (`~/.gemini/oauth_creds.json`) | Google Code Assist and OAuth endpoints |
+| **Antigravity** | Model-group quota from the signed-in Antigravity CLI's read-only `/usage` command on Windows, with the local language server as a fallback | Google's Antigravity backend through `agy`, or the local language server |
+| **Gemini Code Assist** | The OAuth token from Gemini CLI (`~/.gemini/oauth_creds.json`) | Google Code Assist and OAuth endpoints |
 | **Grok** | The OIDC session from Grok Build (`~/.grok/auth.json` via `grok login`), or grok.com cookies you provide; tokens refresh via auth.x.ai; plus local `~/.grok/sessions` logs for tokens / cache / effort / projects / API-equivalent $ (`costUsdTicks`) | grok.com, auth.x.ai |
 | **DeepSeek Harness** (`dsh`, DeepSeek's open-source coding agent) | Read-only `$DSH_HOME/sessions` JSONL/Zstandard usage, default `~/.dsh`; existing `deepseek-account-platform/default` grant in `.credentials.yaml` for the official account wallet query. No API key, credential refresh/write, model request or conversation upload. Recharge and bonus balances remain separate; local Token counts are not a bill or quota percentage. | platform.deepseek.com |
 | Other providers | A local session or token on this PC, or the provider's own usage endpoint | The provider's own domain only |
+
+### Gemini subscription quota on Windows
+
+Sign in to Antigravity CLI 1.2.13 or later and enable **Antigravity** in Ceiling.
+The card shows the available Gemini five-hour and weekly quotas. Ceiling reads
+the [structured output of the CLI's read-only quota command](https://antigravity.google/docs/changelog?tab=cli).
+On Windows with Antigravity CLI installed, existing Gemini display preferences
+move to Antigravity when there is no Gemini CLI sign-in or when the stored
+Gemini CLI credentials belong to a personal Google account (no Workspace domain
+claim). Organization and Enterprise Gemini Code Assist accounts stay untouched,
+and the `gemini` provider ID remains available for Gemini Code Assist.
 
 ## Network policy
 

@@ -2119,3 +2119,138 @@ fn test_uninstaller_matches_the_start_at_login_value() {
         );
     }
 }
+
+#[test]
+fn personal_gemini_migration_preserves_other_providers_and_is_idempotent() {
+    let mut settings = Settings {
+        enabled_providers: ["codex", "gemini"].into_iter().map(str::to_owned).collect(),
+        provider_order: vec!["gemini".into(), "codex".into(), "antigravity".into()],
+        float_bar_provider_ids: vec!["codex".into(), "gemini".into()],
+        provider_metrics: [("gemini".into(), MetricPreference::Weekly)].into(),
+        provider_usage_thresholds: [
+            (
+                "gemini".into(),
+                UsageThresholdOverride {
+                    high: Some(85.0),
+                    critical: Some(95.0),
+                },
+            ),
+            (
+                "gemini:weekly".into(),
+                UsageThresholdOverride {
+                    high: None,
+                    critical: Some(90.0),
+                },
+            ),
+        ]
+        .into(),
+        taskbar_account_by_provider: [("gemini".into(), "gemini-acct-uuid".into())].into(),
+        ..Settings::default()
+    };
+    settings.migrate_personal_gemini();
+    assert!(!settings.enabled_providers.contains("gemini"));
+    assert!(settings.enabled_providers.contains("antigravity"));
+    assert_eq!(settings.provider_order, ["antigravity", "codex"]);
+    assert_eq!(settings.float_bar_provider_ids, ["codex", "antigravity"]);
+    assert_eq!(
+        settings.get_provider_metric(ProviderId::Antigravity),
+        MetricPreference::Weekly
+    );
+    assert!(!settings.provider_usage_thresholds.contains_key("gemini"));
+    assert_eq!(
+        settings.provider_usage_thresholds["antigravity"].high,
+        Some(85.0)
+    );
+    assert_eq!(
+        settings.provider_usage_thresholds["antigravity:weekly"].critical,
+        Some(90.0)
+    );
+    assert_eq!(
+        settings
+            .taskbar_account_by_provider
+            .get("gemini")
+            .map(String::as_str),
+        Some("gemini-acct-uuid"),
+        "Gemini account UUID pin should stay under gemini rather than breaking Antigravity lookup"
+    );
+
+    let saved = serde_json::to_string(&settings).unwrap();
+    let mut settings: Settings = serde_json::from_str(&saved).unwrap();
+    settings.enable_provider(ProviderId::Gemini);
+    settings.migrate_personal_gemini();
+    assert!(settings.enabled_providers.contains("gemini"));
+}
+
+#[test]
+fn personal_gemini_migration_keeps_inline_credentials_when_credential_migration_fails() {
+    let original = r#"{
+        "enabled_providers": ["gemini"],
+        "provider_configs": {
+            "openrouter": { "api_token": "inline-secret" }
+        }
+    }"#;
+    let disk = std::cell::RefCell::new(original.to_string());
+    let loaded: Settings = serde_json::from_str(&disk.borrow()).unwrap();
+
+    let settings = loaded.apply_load_migrations(
+        true,
+        |_| Some(Err(anyhow::anyhow!("secure store unavailable"))),
+        |settings| {
+            *disk.borrow_mut() = serde_json::to_string(settings)?;
+            Ok(())
+        },
+    );
+
+    assert_eq!(
+        *disk.borrow(),
+        original,
+        "settings.json must not be rewritten"
+    );
+    let on_disk: Settings = serde_json::from_str(&disk.borrow()).unwrap();
+    assert_eq!(
+        on_disk
+            .provider_configs
+            .get(&ProviderId::OpenRouter)
+            .and_then(|config| config.api_token.as_deref()),
+        Some("inline-secret")
+    );
+    assert!(settings.has_legacy_credentials());
+    assert!(!settings.personal_gemini_migrated);
+    assert!(settings.enabled_providers.contains("gemini"));
+}
+
+#[test]
+fn personal_gemini_migration_saves_after_credentials_reach_the_secure_store() {
+    let loaded: Settings = serde_json::from_str(
+        r#"{
+            "enabled_providers": ["gemini"],
+            "provider_configs": {
+                "openrouter": { "api_token": "inline-secret" }
+            }
+        }"#,
+    )
+    .unwrap();
+    let writes = std::cell::RefCell::new(Vec::new());
+
+    let settings = loaded.apply_load_migrations(
+        true,
+        |settings| {
+            let mut sanitized = settings.clone();
+            for config in sanitized.provider_configs.values_mut() {
+                config.api_token = None;
+            }
+            Some(Ok(sanitized))
+        },
+        |settings| {
+            writes.borrow_mut().push(serde_json::to_value(settings)?);
+            Ok(())
+        },
+    );
+
+    let writes = writes.borrow();
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[1]["personal_gemini_migrated"], true);
+    assert!(settings.personal_gemini_migrated);
+    assert!(settings.enabled_providers.contains("antigravity"));
+    assert!(!settings.enabled_providers.contains("gemini"));
+}

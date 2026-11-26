@@ -904,7 +904,44 @@ fn extract_hosted_domain_from_jwt(token: &str) -> Option<String> {
     jwt_payload(token)?
         .get("hd")
         .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|hd| !hd.is_empty())
         .map(str::to_owned)
+}
+
+/// Returns `true` when `path` (`~/.gemini/oauth_creds.json`) is either absent
+/// or contains a Google OAuth `id_token` for a personal consumer account
+/// (non-empty `email` and no Workspace `hd` hosted-domain claim).
+///
+/// Fails safe to `false` when the file exists with a Workspace `hd` claim,
+/// cannot be read or parsed, or has no verifiable `id_token`, so organization
+/// Gemini Code Assist accounts are never silently disabled.
+#[cfg(any(windows, test))]
+pub(crate) fn is_absent_or_personal_gemini_creds(path: &Path) -> bool {
+    if !path.exists() {
+        return true;
+    }
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(creds) = serde_json::from_str::<OAuthCredentials>(&raw) else {
+        return false;
+    };
+    let Some(id_token) = creds.id_token.as_deref() else {
+        return false;
+    };
+    let Some(payload) = jwt_payload(id_token) else {
+        return false;
+    };
+    let has_email = payload
+        .get("email")
+        .and_then(|v| v.as_str())
+        .is_some_and(|e| !e.trim().is_empty());
+    let has_hosted_domain = payload
+        .get("hd")
+        .and_then(|v| v.as_str())
+        .is_some_and(|hd| !hd.trim().is_empty());
+    has_email && !has_hosted_domain
 }
 
 fn jwt_payload(token: &str) -> Option<serde_json::Value> {
@@ -1611,5 +1648,42 @@ mod tests {
         stale_quota.assert_async().await;
         refresh.assert_async().await;
         assert!(matches!(error, ProviderError::AuthRequired));
+    }
+
+    #[test]
+    fn personal_gemini_creds_check_migrates_missing_and_consumer_but_preserves_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let creds_path = dir.path().join("oauth_creds.json");
+
+        // Missing file -> eligible for migration
+        assert!(is_absent_or_personal_gemini_creds(&creds_path));
+
+        // Consumer account (email, no hd claim) -> eligible for migration
+        let consumer_jwt = test_id_token("sub-1", "user@gmail.com");
+        std::fs::write(
+            &creds_path,
+            serde_json::json!({ "id_token": consumer_jwt }).to_string(),
+        )
+        .unwrap();
+        assert!(is_absent_or_personal_gemini_creds(&creds_path));
+
+        // Workspace / Enterprise account (hd claim present) -> fail-safe: do NOT migrate
+        let payload = base64::Engine::encode(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD,
+            r#"{"sub":"sub-2","email":"dev@company.com","hd":"company.com"}"#,
+        );
+        let workspace_jwt = format!("eyJhbGciOiJSUzI1NiJ9.{payload}.sig");
+        std::fs::write(
+            &creds_path,
+            serde_json::json!({ "id_token": workspace_jwt }).to_string(),
+        )
+        .unwrap();
+        assert!(!is_absent_or_personal_gemini_creds(&creds_path));
+
+        // Missing id_token or malformed JSON -> fail-safe: do NOT migrate
+        std::fs::write(&creds_path, r#"{"access_token":"tok"}"#).unwrap();
+        assert!(!is_absent_or_personal_gemini_creds(&creds_path));
+        std::fs::write(&creds_path, "not json").unwrap();
+        assert!(!is_absent_or_personal_gemini_creds(&creds_path));
     }
 }

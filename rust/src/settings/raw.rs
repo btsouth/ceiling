@@ -15,6 +15,7 @@ use super::*;
 #[serde(default)]
 pub(super) struct RawSettings {
     enabled_providers: HashSet<String>,
+    personal_gemini_migrated: bool,
     refresh_interval_secs: u64,
     refresh_all_providers_on_menu_open: bool,
     start_minimized: bool,
@@ -203,6 +204,7 @@ impl Default for RawSettings {
         let s = Settings::default();
         Self {
             enabled_providers: s.enabled_providers,
+            personal_gemini_migrated: s.personal_gemini_migrated,
             refresh_interval_secs: s.refresh_interval_secs,
             refresh_all_providers_on_menu_open: s.refresh_all_providers_on_menu_open,
             start_minimized: s.start_minimized,
@@ -605,6 +607,7 @@ impl From<RawSettings> for Settings {
 
         Settings {
             enabled_providers: raw.enabled_providers,
+            personal_gemini_migrated: raw.personal_gemini_migrated,
             refresh_interval_secs: raw.refresh_interval_secs,
             refresh_all_providers_on_menu_open: raw.refresh_all_providers_on_menu_open,
             start_minimized: raw.start_minimized,
