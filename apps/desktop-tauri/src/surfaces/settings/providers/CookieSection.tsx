@@ -17,7 +17,7 @@ interface Props {
   onCredentialsChanged?: () => void;
 }
 
-function cookiePlaceholder(
+export function cookiePlaceholder(
   providerId: string,
   t: ReturnType<typeof useLocale>["t"],
 ): string {
@@ -161,9 +161,9 @@ export function CookieSection({
       <div className="provider-detail-helper">
         <strong>{t("BrowserCookiePasteGuideTitle")}</strong>
         <ol>
-          <li>{t("BrowserCookiePasteGuideSignIn")}</li>
+          <li>{formatLocale(t("BrowserCookiePasteGuideSignIn"), cookieDomain)}</li>
           <li>{t("BrowserCookiePasteGuideDevTools")}</li>
-          <li>{t("BrowserCookiePasteGuideCopy")}</li>
+          <li>{formatLocale(t("BrowserCookiePasteGuideCopy"), cookieDomain)}</li>
           <li>{t("BrowserCookiePasteGuideSave")}</li>
         </ol>
         <p>{t("BrowserCookiePasteGuidePrivacy")}</p>

@@ -9,6 +9,7 @@ import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import { SecretField } from "../../../components/SecretField";
 import { formatLocale } from "../../../lib/formatLocale";
 import { useLocale } from "../../../hooks/useLocale";
+import { cookiePlaceholder } from "../providers/CookieSection";
 import type {
   CookieInfoBridge,
   ProviderCatalogEntry,
@@ -43,6 +44,9 @@ export default function CookiesTab({ providers }: { providers: ProviderCatalogEn
 
   // Only show providers with a cookie domain
   const cookieProviders = providers.filter((p) => p.cookieDomain !== null);
+  const guideSite =
+    cookieProviders.find((p) => p.id === addProviderId)?.cookieDomain ??
+    t("BrowserCookiePasteGuideSiteFallback");
 
   const handleAdd = async () => {
     if (!addProviderId || !addCookieValue.trim()) return;
@@ -141,9 +145,9 @@ export default function CookiesTab({ providers }: { providers: ProviderCatalogEn
 
       <h3 className="settings-section__title">{t("BrowserCookiePasteGuideTitle")}</h3>
       <ol className="settings-section__hint">
-        <li>{t("BrowserCookiePasteGuideSignIn")}</li>
+        <li>{formatLocale(t("BrowserCookiePasteGuideSignIn"), guideSite)}</li>
         <li>{t("BrowserCookiePasteGuideDevTools")}</li>
-        <li>{t("BrowserCookiePasteGuideCopy")}</li>
+        <li>{formatLocale(t("BrowserCookiePasteGuideCopy"), guideSite)}</li>
         <li>{t("BrowserCookiePasteGuideSave")}</li>
       </ol>
       <p className="settings-section__hint">{t("BrowserCookiePasteGuidePrivacy")}</p>
@@ -164,7 +168,7 @@ export default function CookiesTab({ providers }: { providers: ProviderCatalogEn
           label={t("SecretFieldCookieLabel")}
           value={addCookieValue}
           onChange={setAddCookieValue}
-          placeholder="Paste cookie header value…"
+          placeholder={cookiePlaceholder(addProviderId, t)}
           disabled={busy}
           revealLabel={t("SecretFieldReveal")}
           hideLabel={t("SecretFieldHide")}
@@ -174,7 +178,7 @@ export default function CookiesTab({ providers }: { providers: ProviderCatalogEn
           disabled={busy || !addProviderId || !addCookieValue.trim()}
           onClick={() => void handleAdd()}
         >
-          Save Cookie
+          {t("BrowserCookieSave")}
         </button>
       </div>
       <ConfirmDialog
