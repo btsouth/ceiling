@@ -9,12 +9,43 @@ param(
 
     [string]$BucketName = "ceiling-downloads",
     [string]$DownloadOrigin = "https://downloads.ceiling.win",
-    [string]$WranglerVersion = "4.113.0",
+    [string]$AccountId = $env:CLOUDFLARE_ACCOUNT_ID,
     [switch]$SkipPublicVerification
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+function Get-FirstNonEmptyEnvironmentValue {
+    param([Parameter(Mandatory = $true)][string[]]$Names)
+
+    foreach ($candidate in $Names) {
+        $value = [Environment]::GetEnvironmentVariable($candidate)
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            return $value
+        }
+    }
+    return $null
+}
+
+# Fail before touching the network if the upload could never succeed.
+if ([string]::IsNullOrWhiteSpace($AccountId)) {
+    throw "Cloudflare account ID is required. Pass -AccountId or set CLOUDFLARE_ACCOUNT_ID."
+}
+$AccountId = $AccountId.Trim()
+if ($AccountId -notmatch '^[0-9A-Za-z]+$') {
+    throw "Cloudflare account ID contains unexpected characters."
+}
+
+$r2AccessKeyId = Get-FirstNonEmptyEnvironmentValue -Names @("CLOUDFLARE_R2_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
+$r2SecretAccessKey = Get-FirstNonEmptyEnvironmentValue -Names @("CLOUDFLARE_R2_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
+if ($null -eq $r2AccessKeyId -or $null -eq $r2SecretAccessKey) {
+    throw "R2 S3 credentials are required. Set CLOUDFLARE_R2_ACCESS_KEY_ID and CLOUDFLARE_R2_SECRET_ACCESS_KEY (or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)."
+}
+
+if ($null -eq (Get-Command -Name aws -CommandType Application -ErrorAction SilentlyContinue)) {
+    throw "The AWS CLI (aws) is required to upload to R2 but was not found on PATH."
+}
 
 $resolvedAssetsDir = (Resolve-Path -LiteralPath $AssetsDir).Path
 $installerName = "Ceiling-$Version-Store-Setup.exe"
@@ -101,6 +132,10 @@ try {
     Remove-Item -LiteralPath $existingInstallerPath, $existingHashPath -Force -ErrorAction SilentlyContinue
 }
 
+# Wrangler caps a single upload at 300 MiB, and the Store installer bundles the
+# WebView2 standalone runtime, which alone passed 280 MiB in v1.5.50. The AWS
+# CLI talks to R2's S3-compatible endpoint and switches to multipart upload for
+# large files, so it has no such ceiling.
 function Publish-R2Object {
     param(
         [Parameter(Mandatory = $true)]
@@ -114,15 +149,49 @@ function Publish-R2Object {
     )
 
     $name = Split-Path -Leaf $Path
-    $objectPath = "$BucketName/$objectPrefix/$name"
-    & npx --yes "wrangler@$WranglerVersion" r2 object put $objectPath `
-        "--file=$Path" `
-        --remote `
-        --force `
-        "--content-type=$ContentType" `
-        "--cache-control=$CacheControl"
-    if ($LASTEXITCODE -ne 0) {
-        throw "Wrangler failed to upload $name to R2."
+    $destination = "s3://$BucketName/$objectPrefix/$name"
+    $endpoint = "https://$AccountId.r2.cloudflarestorage.com"
+
+    # Scope credentials and R2 compatibility settings to this upload, then put
+    # every variable back exactly as it was. AWS_SESSION_TOKEN and AWS_PROFILE
+    # are cleared so a stray value on the runner cannot replace the R2 keys.
+    $uploadEnvironment = [ordered]@{
+        AWS_ACCESS_KEY_ID                = $r2AccessKeyId
+        AWS_SECRET_ACCESS_KEY            = $r2SecretAccessKey
+        AWS_SESSION_TOKEN                = $null
+        AWS_PROFILE                      = $null
+        AWS_DEFAULT_REGION               = "auto"
+        AWS_EC2_METADATA_DISABLED        = "true"
+        # AWS CLI 2.23 and later send CRC checksums on every request by
+        # default, which R2 rejects for multipart uploads. Only send them when
+        # the API requires one.
+        AWS_REQUEST_CHECKSUM_CALCULATION = "WHEN_REQUIRED"
+        AWS_RESPONSE_CHECKSUM_VALIDATION = "WHEN_REQUIRED"
+    }
+    $previousEnvironment = @{}
+    foreach ($key in $uploadEnvironment.Keys) {
+        $previousEnvironment[$key] = [Environment]::GetEnvironmentVariable($key)
+    }
+
+    try {
+        foreach ($key in $uploadEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($key, $uploadEnvironment[$key])
+        }
+
+        Write-Host "Uploading $name to $destination"
+        & aws s3 cp $Path $destination `
+            --endpoint-url $endpoint `
+            --region auto `
+            --content-type $ContentType `
+            --cache-control $CacheControl `
+            --no-progress
+        if ($LASTEXITCODE -ne 0) {
+            throw "AWS CLI failed to upload $name to R2 bucket $BucketName (exit $LASTEXITCODE)."
+        }
+    } finally {
+        foreach ($key in $uploadEnvironment.Keys) {
+            [Environment]::SetEnvironmentVariable($key, $previousEnvironment[$key])
+        }
     }
 }
 
