@@ -23,7 +23,7 @@ use crate::core::{
 const NOT_RUNNING_MESSAGE: &str = "Antigravity language server not running. Start Google Antigravity or run `agy`, sign in, then retry.";
 const NOT_SIGNED_IN_MESSAGE: &str = "Antigravity is not signed in. Run agy, sign in, then retry.";
 const NO_QUOTA_MESSAGE: &str = "Antigravity returned no usable quota data.";
-const DESKTOP_HOST_BRIDGE_MESSAGE: &str = "Antigravity Desktop is running, but its local authentication method is unavailable to Ceiling. View usage in Antigravity Settings > Models.";
+const DESKTOP_HOST_BRIDGE_MESSAGE: &str = "Antigravity Desktop is running, but its local authentication method is unavailable to Ceiling. View usage in Antigravity Settings > Models, or install the Antigravity CLI (`agy`) so Ceiling can read quota.";
 pub(crate) const CLI_TOKEN_REQUIRED_MESSAGE: &str = "This version of the Antigravity CLI requires a local access token that Ceiling cannot read. Start agy with `agy --csrf_token <any random value>` (PowerShell: agy --csrf_token (New-Guid)), then retry.";
 
 /// Antigravity provider
