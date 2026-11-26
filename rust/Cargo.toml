@@ -94,6 +94,8 @@ libc = "0.2"
 
 # Windows-only
 [target.'cfg(windows)'.dependencies]
+# Scratch workspace for the Antigravity CLI quota check
+tempfile = "3"
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",

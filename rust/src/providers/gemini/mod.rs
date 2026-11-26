@@ -13,6 +13,8 @@ use crate::core::{
 };
 
 pub use api::GeminiApi;
+#[cfg(windows)]
+pub(crate) use api::is_absent_or_personal_gemini_creds;
 
 /// Whether Gemini CLI is installed on this machine.
 pub fn cli_installed() -> bool {
@@ -30,12 +32,12 @@ impl GeminiProvider {
         Self {
             metadata: ProviderMetadata {
                 id: ProviderId::Gemini,
-                display_name: "Gemini",
+                display_name: ProviderId::Gemini.display_name(),
                 session_label: "Daily",
                 weekly_label: "Daily",
                 supports_opus: false,
                 supports_credits: false,
-                default_enabled: true,
+                default_enabled: false,
                 is_primary: false,
                 dashboard_url: Some("https://aistudio.google.com"),
                 status_page_url: Some("https://status.cloud.google.com"),

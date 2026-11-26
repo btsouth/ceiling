@@ -249,10 +249,14 @@ impl PromoSignal {
 pub struct UsageSnapshot {
     /// Primary rate window (usually session-based, e.g., 5-hour for Claude)
     pub primary: RateWindow,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_label: Option<String>,
 
     /// Secondary rate window (usually weekly/monthly)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub secondary: Option<RateWindow>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secondary_label: Option<String>,
 
     /// Model-specific rate window (e.g., Opus quota for Claude)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -305,7 +309,9 @@ impl UsageSnapshot {
     pub fn new(primary: RateWindow) -> Self {
         Self {
             primary,
+            primary_label: None,
             secondary: None,
+            secondary_label: None,
             model_specific: None,
             tertiary: None,
             tertiary_label: None,
