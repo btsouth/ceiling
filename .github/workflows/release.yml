@@ -336,9 +336,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version-file: .node-version
       - name: Prepare Store artifact path
         shell: pwsh
         run: |
@@ -351,12 +348,14 @@ jobs:
       - name: Publish Microsoft Store installer to Cloudflare R2
         shell: pwsh
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_R2_API_TOKEN }}
+          CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
         run: |
           foreach ($name in @(
-            "CLOUDFLARE_API_TOKEN",
+            "CLOUDFLARE_R2_ACCESS_KEY_ID",
+            "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
             "CLOUDFLARE_ACCOUNT_ID",
             "CLOUDFLARE_R2_BUCKET"
           )) {
@@ -367,7 +366,8 @@ jobs:
           & .\scripts\publish-store-installer.ps1 `
             -Version $env:RELEASE_VERSION `
             -AssetsDir $env:RELEASE_ASSETS_DIR `
-            -BucketName $env:CLOUDFLARE_R2_BUCKET
+            -BucketName $env:CLOUDFLARE_R2_BUCKET `
+            -AccountId $env:CLOUDFLARE_ACCOUNT_ID
 
 
   submit-store:

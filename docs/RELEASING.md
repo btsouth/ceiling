@@ -42,9 +42,18 @@ Microsoft Store installers are published under
 must define these Cloudflare values:
 
 - variable `CLOUDFLARE_ACCOUNT_ID`;
-- variable `CLOUDFLARE_R2_BUCKET` (`ceiling-downloads`); and
-- secret `CLOUDFLARE_R2_API_TOKEN`, scoped to the Ceiling account with R2 object
-  write access.
+- variable `CLOUDFLARE_R2_BUCKET` (`ceiling-downloads`);
+- secret `CLOUDFLARE_R2_ACCESS_KEY_ID`; and
+- secret `CLOUDFLARE_R2_SECRET_ACCESS_KEY`.
+
+The two secrets are the Access Key ID and Secret Access Key of an R2 S3 API
+token (Cloudflare dashboard, R2, Manage API tokens) with Object Read & Write
+permission scoped to the `ceiling-downloads` bucket. The upload uses the AWS CLI
+against R2's S3-compatible endpoint, which uploads large files in parts.
+Wrangler is not used because it refuses any single object over 300 MiB, and the
+Store installer passed that limit in v1.5.50 when the bundled WebView2 runtime
+grew. The old `CLOUDFLARE_R2_API_TOKEN` secret is no longer read and can be
+deleted once a release has uploaded with the new keys.
 
 The release workflow runs `scripts/publish-store-installer.ps1`, which validates
 the signed installer's checksum before upload and downloads it again from the
