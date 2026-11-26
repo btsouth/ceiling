@@ -571,6 +571,7 @@ export const ALL_LOCALE_KEYS = [
   "BrowserCookiePasteGuideCopy",
   "BrowserCookiePasteGuideSave",
   "BrowserCookiePasteGuidePrivacy",
+  "BrowserCookiePasteGuideSiteFallback",
   "BrowserCookieMigrationNotice",
   "BrowserCookiePlaceholderDefault",
   "BrowserCookiePlaceholderOllama",

@@ -815,6 +815,7 @@ locale_keys! {
     BrowserCookiePasteGuideCopy,
     BrowserCookiePasteGuideSave,
     BrowserCookiePasteGuidePrivacy,
+    BrowserCookiePasteGuideSiteFallback,
     BrowserCookieMigrationNotice,
     BrowserCookiePlaceholderDefault,
     BrowserCookiePlaceholderOllama,
