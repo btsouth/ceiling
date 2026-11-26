@@ -1,5 +1,17 @@
 # Changelog
 
+## [Ceiling] 1.5.50 - 2026-11-26
+
+Antigravity shows personal Gemini subscription quotas from the Antigravity CLI, and Claude sign-in and cookie copy steps are clearer.
+
+### Added
+- **Personal Gemini quota under Antigravity on Windows.** When Antigravity CLI (`agy` 1.2.13 or later) is signed in, the Antigravity card reads your Gemini five-hour and weekly quotas (plus Claude and GPT windows when present) from `agy /usage`, falling back to the local language-server probe when needed. Existing personal Gemini settings migrate automatically to Antigravity when `agy` is installed, while Workspace and Enterprise Gemini Code Assist accounts stay untouched under **Gemini Code Assist**. Thanks to @jayn2u.
+
+### Fixed
+- **Clearer Antigravity Desktop 2.35.1 message on Windows.** When Antigravity Desktop runs with its stdin host-bridge launch (without `--csrf_token`), Ceiling now explains that Desktop's local auth is unavailable and points to Antigravity Settings > Models or `agy` CLI instead of saying the language server is not running. Thanks to @jayn2u.
+- **Clearer Claude sign-in and manual cookie instructions.** Claude auth prompts now tell you to run `claude /login`, and the manual cookie copy guide names each provider's domain and points directly to Headers > Request Headers > Cookie in DevTools Network.
+- **Security and dependency updates.** Updated `cookie`, `url`, `quinn-udp`, `tauri`, `rmcp`, and other crates to clear RustSec advisories.
+
 ## [Ceiling] 1.5.49 - 2026-11-08
 
 Ceiling shows DeepSeek Harness usage and wallet balances.
