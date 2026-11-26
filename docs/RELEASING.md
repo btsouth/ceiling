@@ -42,18 +42,30 @@ Microsoft Store installers are published under
 must define these Cloudflare values:
 
 - variable `CLOUDFLARE_ACCOUNT_ID`;
-- variable `CLOUDFLARE_R2_BUCKET` (`ceiling-downloads`);
-- secret `CLOUDFLARE_R2_ACCESS_KEY_ID`; and
-- secret `CLOUDFLARE_R2_SECRET_ACCESS_KEY`.
+- variable `CLOUDFLARE_R2_BUCKET` (`ceiling-downloads`); and
+- R2 S3 credentials, either:
+  - secrets `CLOUDFLARE_R2_ACCESS_KEY_ID` and `CLOUDFLARE_R2_SECRET_ACCESS_KEY`;
+    or
+  - secret `CLOUDFLARE_R2_API_TOKEN`, if it is an R2 API token.
 
-The two secrets are the Access Key ID and Secret Access Key of an R2 S3 API
-token (Cloudflare dashboard, R2, Manage API tokens) with Object Read & Write
-permission scoped to the `ceiling-downloads` bucket. The upload uses the AWS CLI
-against R2's S3-compatible endpoint, which uploads large files in parts.
-Wrangler is not used because it refuses any single object over 300 MiB, and the
-Store installer passed that limit in v1.5.50 when the bundled WebView2 runtime
-grew. The old `CLOUDFLARE_R2_API_TOKEN` secret is no longer read and can be
-deleted once a release has uploaded with the new keys.
+When both `CLOUDFLARE_R2_ACCESS_KEY_ID` and `CLOUDFLARE_R2_SECRET_ACCESS_KEY` are
+set, the upload uses them. They are the Access Key ID and Secret Access Key of an
+R2 API token (Cloudflare dashboard, R2, Manage API tokens) with Object Read &
+Write permission scoped to the `ceiling-downloads` bucket. Setting only one of
+the two fails the release before upload.
+
+When neither is set, `scripts/publish-store-installer.ps1` derives the S3
+credentials from `CLOUDFLARE_R2_API_TOKEN`. The access key ID is the token's ID,
+read from Cloudflare's token verify API (the account endpoint first, then the
+user endpoint), and the secret access key is the lowercase hex SHA-256 of the
+token value. This only works for a token created under R2, Manage API tokens. A
+general Cloudflare API token verifies but its derived keys are rejected by R2;
+the upload then fails with a message saying to add the two explicit secrets.
+
+The upload uses the AWS CLI against R2's S3-compatible endpoint, which uploads
+large files in parts. Wrangler is not used because it refuses any single object
+over 300 MiB, and the Store installer passed that limit in v1.5.50 when the
+bundled WebView2 runtime grew.
 
 The release workflow runs `scripts/publish-store-installer.ps1`, which validates
 the signed installer's checksum before upload and downloads it again from the

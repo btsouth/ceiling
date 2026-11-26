@@ -350,18 +350,25 @@ jobs:
         env:
           CLOUDFLARE_R2_ACCESS_KEY_ID: ${{ secrets.CLOUDFLARE_R2_ACCESS_KEY_ID }}
           CLOUDFLARE_R2_SECRET_ACCESS_KEY: ${{ secrets.CLOUDFLARE_R2_SECRET_ACCESS_KEY }}
+          CLOUDFLARE_R2_API_TOKEN: ${{ secrets.CLOUDFLARE_R2_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_R2_BUCKET: ${{ vars.CLOUDFLARE_R2_BUCKET }}
         run: |
-          foreach ($name in @(
-            "CLOUDFLARE_R2_ACCESS_KEY_ID",
-            "CLOUDFLARE_R2_SECRET_ACCESS_KEY",
-            "CLOUDFLARE_ACCOUNT_ID",
-            "CLOUDFLARE_R2_BUCKET"
-          )) {
+          foreach ($name in @("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_R2_BUCKET")) {
             if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
               throw "The release environment is missing $name."
             }
+          }
+          # Explicit R2 S3 keys win. Without them the script derives the keys
+          # from CLOUDFLARE_R2_API_TOKEN.
+          $hasKeyId = -not [string]::IsNullOrWhiteSpace($env:CLOUDFLARE_R2_ACCESS_KEY_ID)
+          $hasSecret = -not [string]::IsNullOrWhiteSpace($env:CLOUDFLARE_R2_SECRET_ACCESS_KEY)
+          $hasToken = -not [string]::IsNullOrWhiteSpace($env:CLOUDFLARE_R2_API_TOKEN)
+          if ($hasKeyId -ne $hasSecret) {
+            throw "The release environment has only one of CLOUDFLARE_R2_ACCESS_KEY_ID and CLOUDFLARE_R2_SECRET_ACCESS_KEY. Set both, or remove both to use CLOUDFLARE_R2_API_TOKEN."
+          }
+          if (-not $hasKeyId -and -not $hasToken) {
+            throw "The release environment needs CLOUDFLARE_R2_ACCESS_KEY_ID and CLOUDFLARE_R2_SECRET_ACCESS_KEY, or CLOUDFLARE_R2_API_TOKEN."
           }
           & .\scripts\publish-store-installer.ps1 `
             -Version $env:RELEASE_VERSION `
