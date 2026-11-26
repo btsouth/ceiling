@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 const CLAUDE_LOGIN_ARGS: &[&str] = &["auth", "login"];
 const CODEX_LOGIN_ARGS: &[&str] = &["login", "--device-auth"];
+const COPILOT_LOGIN_ARGS: &[&str] = &["auth", "login", "-w"];
 
 /// Result of a login attempt
 #[derive(Debug, Clone)]
@@ -43,80 +44,117 @@ pub enum LoginPhase {
     Complete,
 }
 
-/// Run Claude CLI login
+/// How a CLI login flow gets the user into a browser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BrowserOpenMode {
+    /// The CLI opens the browser itself. Any URL it prints is only a manual
+    /// fallback, so Ceiling records it but never opens it.
+    CliManaged,
+    /// The CLI prints a verification URL and expects the user to open it, so
+    /// Ceiling opens the first printed URL once.
+    OpenPrintedUrl,
+}
+
+/// Static description of one CLI login flow.
+#[derive(Debug, Clone, Copy)]
+struct CliLoginSpec {
+    binary: &'static str,
+    args: &'static [&'static str],
+    success_markers: &'static [&'static str],
+    browser_mode: BrowserOpenMode,
+}
+
+const COMMON_SUCCESS_MARKERS: &[&str] = &[
+    "Successfully logged in",
+    "Login successful",
+    "Logged in successfully",
+];
+
+/// `claude auth login` starts a localhost callback server and opens the
+/// browser to it on its own. The URL it prints to stdout is the manual
+/// copy-paste fallback, which Ceiling has no way to accept, so opening it
+/// would hijack the automatic flow.
+fn claude_login_spec() -> CliLoginSpec {
+    CliLoginSpec {
+        binary: "claude",
+        args: CLAUDE_LOGIN_ARGS,
+        success_markers: COMMON_SUCCESS_MARKERS,
+        browser_mode: BrowserOpenMode::CliManaged,
+    }
+}
+
+/// `codex login --device-auth` prints a device verification URL.
+fn codex_login_spec() -> CliLoginSpec {
+    CliLoginSpec {
+        binary: "codex",
+        args: CODEX_LOGIN_ARGS,
+        success_markers: COMMON_SUCCESS_MARKERS,
+        browser_mode: BrowserOpenMode::OpenPrintedUrl,
+    }
+}
+
+/// `gh auth login -w` prints a device verification URL.
+fn copilot_login_spec() -> CliLoginSpec {
+    CliLoginSpec {
+        binary: "gh",
+        args: COPILOT_LOGIN_ARGS,
+        success_markers: &["Logged in as", "Authentication complete"],
+        browser_mode: BrowserOpenMode::OpenPrintedUrl,
+    }
+}
+
+/// Run Claude CLI login. The CLI opens its own browser tab; Ceiling only
+/// reports progress and records any fallback URL it prints.
 pub fn run_claude_login<F>(timeout_secs: u64, on_phase: F) -> LoginResult
 where
     F: Fn(LoginPhase) + Send + 'static,
 {
-    run_cli_login(
-        "claude",
-        CLAUDE_LOGIN_ARGS,
-        timeout_secs,
-        on_phase,
-        &[
-            "Successfully logged in",
-            "Login successful",
-            "Logged in successfully",
-        ],
-    )
+    run_cli_login(claude_login_spec(), timeout_secs, on_phase)
 }
 
-/// Run Codex CLI login
+/// Run Codex CLI device login, opening the printed verification URL.
 pub fn run_codex_login<F>(timeout_secs: u64, on_phase: F) -> LoginResult
 where
     F: Fn(LoginPhase) + Send + 'static,
 {
-    run_cli_login(
-        "codex",
-        CODEX_LOGIN_ARGS,
-        timeout_secs,
-        on_phase,
-        &[
-            "Successfully logged in",
-            "Login successful",
-            "Logged in successfully",
-        ],
-    )
+    run_cli_login(codex_login_spec(), timeout_secs, on_phase)
 }
 
-/// Run Copilot/GitHub device flow login
+/// Run Copilot/GitHub device flow login, opening the printed verification URL.
 pub fn run_copilot_login<F>(timeout_secs: u64, on_phase: F) -> LoginResult
 where
     F: Fn(LoginPhase) + Send + 'static,
 {
-    run_cli_login(
-        "gh",
-        &["auth", "login", "-w"],
-        timeout_secs,
-        on_phase,
-        &["Logged in as", "Authentication complete"],
-    )
+    run_cli_login(copilot_login_spec(), timeout_secs, on_phase)
 }
 
 /// Generic CLI login runner
-fn run_cli_login<F>(
-    binary: &str,
-    args: &[&str],
-    timeout_secs: u64,
-    on_phase: F,
-    success_markers: &[&str],
-) -> LoginResult
+fn run_cli_login<F>(spec: CliLoginSpec, timeout_secs: u64, on_phase: F) -> LoginResult
 where
     F: Fn(LoginPhase) + Send + 'static,
 {
-    let binary_path = match which::which(binary) {
+    let binary_path = match which::which(spec.binary) {
         Ok(p) => p,
-        Err(_) => return missing_binary_result(binary),
+        Err(_) => return missing_binary_result(spec.binary),
     };
 
     on_phase(LoginPhase::Requesting);
 
-    let child = match spawn_login_process(binary_path.as_path(), args) {
+    let child = match spawn_login_process(binary_path.as_path(), spec.args) {
         Ok(c) => c,
         Err(e) => return launch_failed_result(e),
     };
 
-    let state = CliLoginState::new(timeout_secs, &on_phase, success_markers);
+    let open_url = |url: &str| {
+        let _ = open::that(url);
+    };
+    let state = CliLoginState::new(
+        timeout_secs,
+        &on_phase,
+        spec.success_markers,
+        spec.browser_mode,
+        &open_url,
+    );
 
     monitor_login_process(child, state, &on_phase)
 }
@@ -158,6 +196,9 @@ where
     url_regex: Regex,
     on_phase: &'a F,
     success_markers: &'a [&'a str],
+    browser_mode: BrowserOpenMode,
+    open_url: &'a dyn Fn(&str),
+    waiting_browser_emitted: bool,
     start: Instant,
     timeout: Duration,
 }
@@ -166,13 +207,22 @@ impl<'a, F> CliLoginState<'a, F>
 where
     F: Fn(LoginPhase),
 {
-    fn new(timeout_secs: u64, on_phase: &'a F, success_markers: &'a [&'a str]) -> Self {
+    fn new(
+        timeout_secs: u64,
+        on_phase: &'a F,
+        success_markers: &'a [&'a str],
+        browser_mode: BrowserOpenMode,
+        open_url: &'a dyn Fn(&str),
+    ) -> Self {
         Self {
             output: String::new(),
             auth_link: None,
             url_regex: Regex::new(r"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+").unwrap(),
             on_phase,
             success_markers,
+            browser_mode,
+            open_url,
+            waiting_browser_emitted: false,
             start: Instant::now(),
             timeout: Duration::from_secs(timeout_secs),
         }
@@ -199,6 +249,12 @@ where
     }
 
     fn capture_auth_link(&mut self, line: &str) {
+        if self.browser_mode == BrowserOpenMode::CliManaged
+            && line.to_lowercase().contains("opening browser")
+        {
+            self.emit_waiting_browser();
+        }
+
         if self.auth_link.is_some() {
             return;
         }
@@ -207,9 +263,19 @@ where
             return;
         };
 
-        self.auth_link = Some(m.as_str().to_string());
-        (self.on_phase)(LoginPhase::WaitingBrowser);
-        let _ = open::that(m.as_str());
+        let url = m.as_str().to_string();
+        self.emit_waiting_browser();
+        if self.browser_mode == BrowserOpenMode::OpenPrintedUrl {
+            (self.open_url)(&url);
+        }
+        self.auth_link = Some(url);
+    }
+
+    fn emit_waiting_browser(&mut self) {
+        if !self.waiting_browser_emitted {
+            self.waiting_browser_emitted = true;
+            (self.on_phase)(LoginPhase::WaitingBrowser);
+        }
     }
 
     fn into_result(self, outcome: LoginOutcome) -> LoginResult {
@@ -315,18 +381,162 @@ pub fn open_auth_url(url: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+
+    /// Lines printed by `claude auth login` (Claude Code 2.1.332).
+    const CLAUDE_AUTH_LOGIN_OUTPUT: &[&str] = &[
+        "Opening browser to sign in…",
+        "If the browser didn't open, visit:",
+        "https://claude.ai/oauth/authorize?z-AbC123_xyz",
+        "Paste code here if prompted >",
+    ];
 
     #[test]
     fn login_commands_match_current_dedicated_auth_surfaces() {
         assert_eq!(CLAUDE_LOGIN_ARGS, ["auth", "login"]);
         assert_eq!(CODEX_LOGIN_ARGS, ["login", "--device-auth"]);
+        assert_eq!(COPILOT_LOGIN_ARGS, ["auth", "login", "-w"]);
+    }
+
+    #[test]
+    fn claude_login_lets_the_cli_open_its_own_browser() {
+        let spec = claude_login_spec();
+        assert_eq!(spec.binary, "claude");
+        assert_eq!(spec.args, CLAUDE_LOGIN_ARGS);
+        assert_eq!(spec.browser_mode, BrowserOpenMode::CliManaged);
+    }
+
+    #[test]
+    fn device_auth_logins_open_the_printed_url() {
+        let codex = codex_login_spec();
+        assert_eq!(codex.binary, "codex");
+        assert_eq!(codex.args, CODEX_LOGIN_ARGS);
+        assert_eq!(codex.browser_mode, BrowserOpenMode::OpenPrintedUrl);
+
+        let copilot = copilot_login_spec();
+        assert_eq!(copilot.binary, "gh");
+        assert_eq!(copilot.args, COPILOT_LOGIN_ARGS);
+        assert_eq!(copilot.browser_mode, BrowserOpenMode::OpenPrintedUrl);
+    }
+
+    #[test]
+    fn cli_managed_mode_never_opens_the_fallback_url() {
+        let phases = RefCell::new(Vec::new());
+        let opened = RefCell::new(Vec::<String>::new());
+        let on_phase = |phase| phases.borrow_mut().push(phase);
+        let open_url = |url: &str| opened.borrow_mut().push(url.to_string());
+        let spec = claude_login_spec();
+        let mut state = CliLoginState::new(
+            30,
+            &on_phase,
+            spec.success_markers,
+            spec.browser_mode,
+            &open_url,
+        );
+
+        for line in CLAUDE_AUTH_LOGIN_OUTPUT {
+            assert!(state.handle_line(line).is_none());
+        }
+
+        assert_eq!(*phases.borrow(), vec![LoginPhase::WaitingBrowser]);
+        assert!(opened.borrow().is_empty());
+        let result = state.into_result(LoginOutcome::TimedOut);
+        assert_eq!(
+            result.auth_link.as_deref(),
+            Some("https://claude.ai/oauth/authorize?z-AbC123_xyz")
+        );
+    }
+
+    #[test]
+    fn cli_managed_mode_reports_waiting_from_a_url_alone() {
+        let phases = RefCell::new(Vec::new());
+        let opened = RefCell::new(Vec::<String>::new());
+        let on_phase = |phase| phases.borrow_mut().push(phase);
+        let open_url = |url: &str| opened.borrow_mut().push(url.to_string());
+        let mut state = CliLoginState::new(
+            30,
+            &on_phase,
+            &["Login successful"],
+            BrowserOpenMode::CliManaged,
+            &open_url,
+        );
+
+        state.handle_line("Visit https://claude.ai/oauth/authorize?z-1");
+        state.handle_line("OPENING BROWSER again");
+
+        assert_eq!(*phases.borrow(), vec![LoginPhase::WaitingBrowser]);
+        assert!(opened.borrow().is_empty());
+        let result = state.into_result(LoginOutcome::TimedOut);
+        assert_eq!(
+            result.auth_link.as_deref(),
+            Some("https://claude.ai/oauth/authorize?z-1")
+        );
+    }
+
+    #[test]
+    fn open_printed_url_mode_opens_the_first_url_once() {
+        let phases = RefCell::new(Vec::new());
+        let opened = RefCell::new(Vec::<String>::new());
+        let on_phase = |phase| phases.borrow_mut().push(phase);
+        let open_url = |url: &str| opened.borrow_mut().push(url.to_string());
+        let spec = codex_login_spec();
+        let mut state = CliLoginState::new(
+            30,
+            &on_phase,
+            spec.success_markers,
+            spec.browser_mode,
+            &open_url,
+        );
+
+        state.handle_line("Follow these steps to sign in:");
+        state.handle_line("1. Open https://auth.openai.com/codex/device in your browser");
+        state.handle_line("2. Enter this code: ABCD-1234");
+        state.handle_line("Or visit https://example.com/other");
+
+        assert_eq!(*phases.borrow(), vec![LoginPhase::WaitingBrowser]);
+        assert_eq!(
+            *opened.borrow(),
+            vec!["https://auth.openai.com/codex/device".to_string()]
+        );
+        let result = state.into_result(LoginOutcome::TimedOut);
+        assert_eq!(
+            result.auth_link.as_deref(),
+            Some("https://auth.openai.com/codex/device")
+        );
+    }
+
+    #[test]
+    fn open_printed_url_mode_waits_for_a_url_before_reporting() {
+        let phases = RefCell::new(Vec::new());
+        let opened = RefCell::new(Vec::<String>::new());
+        let on_phase = |phase| phases.borrow_mut().push(phase);
+        let open_url = |url: &str| opened.borrow_mut().push(url.to_string());
+        let mut state = CliLoginState::new(
+            30,
+            &on_phase,
+            &["Logged in as"],
+            BrowserOpenMode::OpenPrintedUrl,
+            &open_url,
+        );
+
+        state.handle_line("Opening browser to complete login");
+
+        assert!(phases.borrow().is_empty());
+        assert!(opened.borrow().is_empty());
     }
 
     #[test]
     fn success_marker_completes_and_notifies_the_caller() {
-        let phases = std::cell::RefCell::new(Vec::new());
+        let phases = RefCell::new(Vec::new());
         let on_phase = |phase| phases.borrow_mut().push(phase);
-        let mut state = CliLoginState::new(30, &on_phase, &["Login successful"]);
+        let open_url = |_: &str| {};
+        let mut state = CliLoginState::new(
+            30,
+            &on_phase,
+            &["Login successful"],
+            BrowserOpenMode::OpenPrintedUrl,
+            &open_url,
+        );
 
         let outcome = state.handle_line("Login successful");
 
