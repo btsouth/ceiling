@@ -10,6 +10,7 @@ param(
     [string]$BucketName = "ceiling-downloads",
     [string]$DownloadOrigin = "https://downloads.ceiling.win",
     [string]$AccountId = $env:CLOUDFLARE_ACCOUNT_ID,
+    [string]$CloudflareApiBaseUrl = "https://api.cloudflare.com/client/v4",
     [switch]$SkipPublicVerification
 )
 
@@ -37,15 +38,131 @@ if ($AccountId -notmatch '^[0-9A-Za-z]+$') {
     throw "Cloudflare account ID contains unexpected characters."
 }
 
-$r2AccessKeyId = Get-FirstNonEmptyEnvironmentValue -Names @("CLOUDFLARE_R2_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID")
-$r2SecretAccessKey = Get-FirstNonEmptyEnvironmentValue -Names @("CLOUDFLARE_R2_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY")
-if ($null -eq $r2AccessKeyId -or $null -eq $r2SecretAccessKey) {
-    throw "R2 S3 credentials are required. Set CLOUDFLARE_R2_ACCESS_KEY_ID and CLOUDFLARE_R2_SECRET_ACCESS_KEY (or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY)."
+function Set-ProcessEnvironmentValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [AllowNull()][AllowEmptyString()][string]$Value
+    )
+
+    # Assigning $null or "" does not reliably unset a variable on Linux and
+    # macOS PowerShell, so a child process could still see an empty
+    # AWS_PROFILE and fail to find a profile named "". Remove it instead.
+    if ([string]::IsNullOrEmpty($Value)) {
+        Remove-Item -LiteralPath "Env:$Name" -ErrorAction SilentlyContinue
+    } else {
+        Set-Item -LiteralPath "Env:$Name" -Value $Value
+    }
+}
+
+function Resolve-ExplicitR2Credential {
+    # Each pair is taken as a unit, so a CLOUDFLARE_R2_* key is never combined
+    # with an unrelated AWS_* secret that happens to be on the runner.
+    $cloudflareKeyId = Get-FirstNonEmptyEnvironmentValue -Names @("CLOUDFLARE_R2_ACCESS_KEY_ID")
+    $cloudflareSecret = Get-FirstNonEmptyEnvironmentValue -Names @("CLOUDFLARE_R2_SECRET_ACCESS_KEY")
+    if ($null -ne $cloudflareKeyId -and $null -ne $cloudflareSecret) {
+        return [pscustomobject]@{ AccessKeyId = $cloudflareKeyId; SecretAccessKey = $cloudflareSecret }
+    }
+    if ($null -ne $cloudflareKeyId -or $null -ne $cloudflareSecret) {
+        $missing = if ($null -eq $cloudflareKeyId) { "CLOUDFLARE_R2_ACCESS_KEY_ID" } else { "CLOUDFLARE_R2_SECRET_ACCESS_KEY" }
+        throw "Only half of the R2 S3 key pair is set: $missing is missing. Set both CLOUDFLARE_R2_ACCESS_KEY_ID and CLOUDFLARE_R2_SECRET_ACCESS_KEY, or neither."
+    }
+
+    $awsKeyId = Get-FirstNonEmptyEnvironmentValue -Names @("AWS_ACCESS_KEY_ID")
+    $awsSecret = Get-FirstNonEmptyEnvironmentValue -Names @("AWS_SECRET_ACCESS_KEY")
+    if ($null -ne $awsKeyId -and $null -ne $awsSecret) {
+        return [pscustomobject]@{ AccessKeyId = $awsKeyId; SecretAccessKey = $awsSecret }
+    }
+    return $null
+}
+
+function Get-ObjectPropertyValue {
+    param(
+        [AllowNull()]$InputObject,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $InputObject) {
+        return $null
+    }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
+}
+
+function Get-CloudflareTokenId {
+    param([Parameter(Mandatory = $true)][string]$ApiToken)
+
+    # Invoke-RestMethod keeps the bearer token out of process arguments. An
+    # account-owned token verifies only on the account endpoint and a
+    # user-owned token only on the user endpoint, so try both.
+    $baseUrl = $CloudflareApiBaseUrl.TrimEnd('/')
+    $headers = @{ Authorization = "Bearer $ApiToken" }
+    foreach ($url in @("$baseUrl/accounts/$AccountId/tokens/verify", "$baseUrl/user/tokens/verify")) {
+        try {
+            $response = Invoke-RestMethod -Method Get -Uri $url -Headers $headers -TimeoutSec 30 -ErrorAction Stop
+        } catch {
+            Write-Host "Cloudflare token verification at $url did not succeed."
+            continue
+        }
+
+        $result = Get-ObjectPropertyValue -InputObject $response -Name "result"
+        $tokenId = Get-ObjectPropertyValue -InputObject $result -Name "id"
+        $status = Get-ObjectPropertyValue -InputObject $result -Name "status"
+        if ((Get-ObjectPropertyValue -InputObject $response -Name "success") -eq $true -and
+            $tokenId -is [string] -and $tokenId -match '^[0-9A-Za-z-]+$' -and
+            ($null -eq $status -or $status -eq "active")) {
+            return $tokenId
+        }
+        Write-Host "Cloudflare token verification at $url did not return an active token ID."
+    }
+
+    throw "Could not verify CLOUDFLARE_R2_API_TOKEN with Cloudflare, so R2 S3 credentials could not be derived from it. Add CLOUDFLARE_R2_ACCESS_KEY_ID and CLOUDFLARE_R2_SECRET_ACCESS_KEY to the release environment."
+}
+
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$Text)
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $digest = $sha256.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Text))
+    } finally {
+        $sha256.Dispose()
+    }
+    return -join ($digest | ForEach-Object { $_.ToString("x2") })
+}
+
+$usedDerivedTokenCredentials = $false
+$explicitCredential = Resolve-ExplicitR2Credential
+$r2ApiToken = $null
+if ($null -eq $explicitCredential) {
+    $r2ApiToken = Get-FirstNonEmptyEnvironmentValue -Names @("CLOUDFLARE_R2_API_TOKEN", "CLOUDFLARE_API_TOKEN")
+    if ($null -eq $r2ApiToken) {
+        throw "R2 S3 credentials are required. Set CLOUDFLARE_R2_ACCESS_KEY_ID and CLOUDFLARE_R2_SECRET_ACCESS_KEY (or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY), or set CLOUDFLARE_R2_API_TOKEN to an R2 API token."
+    }
+    $r2ApiToken = $r2ApiToken.Trim()
 }
 
 if ($null -eq (Get-Command -Name aws -CommandType Application -ErrorAction SilentlyContinue)) {
     throw "The AWS CLI (aws) is required to upload to R2 but was not found on PATH."
 }
+
+if ($null -ne $explicitCredential) {
+    $r2AccessKeyId = $explicitCredential.AccessKeyId
+    $r2SecretAccessKey = $explicitCredential.SecretAccessKey
+} else {
+    # An R2 API token maps to S3 credentials: the access key ID is the token's
+    # ID and the secret is the SHA-256 of the token value.
+    $r2AccessKeyId = Get-CloudflareTokenId -ApiToken $r2ApiToken
+    $r2SecretAccessKey = Get-Sha256Hex -Text $r2ApiToken
+    if ($env:GITHUB_ACTIONS -eq "true") {
+        Write-Host "::add-mask::$r2SecretAccessKey"
+    }
+    $usedDerivedTokenCredentials = $true
+    Write-Host "Derived R2 S3 credentials from CLOUDFLARE_R2_API_TOKEN."
+}
+$r2ApiToken = $null
 
 $resolvedAssetsDir = (Resolve-Path -LiteralPath $AssetsDir).Path
 $installerName = "Ceiling-$Version-Store-Setup.exe"
@@ -175,7 +292,7 @@ function Publish-R2Object {
 
     try {
         foreach ($key in $uploadEnvironment.Keys) {
-            [Environment]::SetEnvironmentVariable($key, $uploadEnvironment[$key])
+            Set-ProcessEnvironmentValue -Name $key -Value $uploadEnvironment[$key]
         }
 
         Write-Host "Uploading $name to $destination"
@@ -186,11 +303,15 @@ function Publish-R2Object {
             --cache-control $CacheControl `
             --no-progress
         if ($LASTEXITCODE -ne 0) {
-            throw "AWS CLI failed to upload $name to R2 bucket $BucketName (exit $LASTEXITCODE)."
+            $failure = "AWS CLI failed to upload $name to R2 bucket $BucketName (exit $LASTEXITCODE)."
+            if ($usedDerivedTokenCredentials) {
+                $failure += " The S3 credentials were derived from CLOUDFLARE_R2_API_TOKEN, which may be a standard Cloudflare API token rather than an R2 API token. Add CLOUDFLARE_R2_ACCESS_KEY_ID and CLOUDFLARE_R2_SECRET_ACCESS_KEY to the release environment."
+            }
+            throw $failure
         }
     } finally {
         foreach ($key in $uploadEnvironment.Keys) {
-            [Environment]::SetEnvironmentVariable($key, $previousEnvironment[$key])
+            Set-ProcessEnvironmentValue -Name $key -Value $previousEnvironment[$key]
         }
     }
 }

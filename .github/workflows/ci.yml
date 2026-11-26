@@ -34,6 +34,9 @@ jobs:
           cache-dependency-path: apps/desktop-tauri/pnpm-lock.yaml
       - run: node --test worker.test.mjs
       - run: node scripts/ci/check-tauri-version-sync.mjs
+      - name: Test Store installer upload credentials
+        shell: pwsh
+        run: ./scripts/ci/test-store-installer-upload.ps1
       - run: pnpm --dir apps/desktop-tauri install --frozen-lockfile
       - run: pnpm --dir apps/desktop-tauri test
       - run: pnpm --dir apps/desktop-tauri run build
