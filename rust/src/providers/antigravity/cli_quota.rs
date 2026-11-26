@@ -2,7 +2,8 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::time::Duration;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Deserialize;
@@ -11,6 +12,29 @@ use crate::cli::tty_runner::{TtyCommandOptions, TtyCommandRunner};
 use crate::core::{ProviderError, ProviderFetchResult, RateWindow, UsageSnapshot};
 
 const PLAN_READY: &str = "Ceiling Antigravity plan ready";
+const PLAN_CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+
+struct PlanCache {
+    fetched_at: Instant,
+    plan: Option<String>,
+}
+
+fn plan_cache() -> &'static Mutex<Option<PlanCache>> {
+    static CACHE: OnceLock<Mutex<Option<PlanCache>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn scratch_workspace() -> Result<(PathBuf, Option<tempfile::TempDir>), ProviderError> {
+    if let Some(dir) = dirs::data_local_dir().map(|dir| dir.join("Ceiling/agy-scratch"))
+        && std::fs::create_dir_all(&dir).is_ok()
+    {
+        return Ok((dir, None));
+    }
+    let temp = tempfile::tempdir().map_err(|_| {
+        ProviderError::Other("Could not prepare the Antigravity quota check.".into())
+    })?;
+    Ok((temp.path().to_path_buf(), Some(temp)))
+}
 const EXPORT_PLAN: &str = r#"
 $status = [Console]::In.ReadToEnd() | ConvertFrom-Json
 if ($status.product -eq 'antigravity' -and $status.plan_tier -is [string] -and $status.plan_tier.Trim()) {
@@ -27,14 +51,12 @@ pub(super) fn binary() -> Option<PathBuf> {
 }
 
 pub(super) async fn fetch(binary: PathBuf) -> Result<ProviderFetchResult, ProviderError> {
-    let workspace = tempfile::tempdir().map_err(|_| {
-        ProviderError::Other("Could not prepare the Antigravity quota check.".into())
-    })?;
+    let (workspace_dir, _temp_guard) = scratch_workspace()?;
     let run = |args: &[&str]| {
         let mut command = tokio::process::Command::new(&binary);
         command
             .args(args)
-            .current_dir(workspace.path())
+            .current_dir(&workspace_dir)
             .stdin(Stdio::null());
         command.creation_flags(0x08000000); // CREATE_NO_WINDOW
         command
@@ -78,12 +100,31 @@ pub(super) async fn fetch(binary: PathBuf) -> Result<ProviderFetchResult, Provid
         .map(|dir| dir.join("Ceiling/gemini-quota"))
         .filter(|dir| dir.is_dir())
     {
-        usage.login_method = tokio::task::spawn_blocking(move || {
-            read_plan(&binary, &trusted_workspace, workspace.path())
-        })
-        .await
-        .ok()
-        .flatten();
+        let cached = plan_cache().lock().ok().and_then(|guard| {
+            guard
+                .as_ref()
+                .filter(|entry| entry.fetched_at.elapsed() < PLAN_CACHE_TTL)
+                .map(|entry| entry.plan.clone())
+        });
+        usage.login_method = match cached {
+            Some(plan) => plan,
+            None => {
+                let scratch_dir = workspace_dir.clone();
+                let plan = tokio::task::spawn_blocking(move || {
+                    read_plan(&binary, &trusted_workspace, &scratch_dir)
+                })
+                .await
+                .ok()
+                .flatten();
+                if let Ok(mut guard) = plan_cache().lock() {
+                    *guard = Some(PlanCache {
+                        fetched_at: Instant::now(),
+                        plan: plan.clone(),
+                    });
+                }
+                plan
+            }
+        };
     }
     Ok(ProviderFetchResult::new(usage, "cli"))
 }
@@ -110,8 +151,9 @@ fn read_plan(
     );
     let command =
         format!("{powershell} -NoLogo -NoProfile -NonInteractive -EncodedCommand {script}");
-    let settings = scratch.join("plan-settings.json");
-    let output = scratch.join("plan.txt");
+    let run_dir = tempfile::tempdir_in(scratch).ok()?;
+    let settings = run_dir.path().join("plan-settings.json");
+    let output = run_dir.path().join("plan.txt");
     let config = serde_json::json!({
         "statusLine": { "type": "command", "command": command, "enabled": true }
     });
@@ -147,13 +189,26 @@ fn supports_quota(version: &[u8]) -> bool {
     let Ok(version) = std::str::from_utf8(version) else {
         return false;
     };
-    let mut parts = version.trim().trim_start_matches('v').split('.');
-    let (Some(major), Some(minor), Some(patch)) = (parts.next(), parts.next(), parts.next()) else {
-        return false;
-    };
     // Read-only structured /usage is verified on 1.2.13 (issue #487).
-    matches!((major.parse::<u32>(), minor.parse::<u32>(), patch.parse::<u32>()),
-        (Ok(major), Ok(minor), Ok(patch)) if parts.next().is_none() && (major, minor, patch) >= (1, 2, 13))
+    // Accept bare `1.2.13`, prefixed `v1.2.13` / `agy 1.2.13`, and prerelease
+    // or build suffixes such as `1.3.0-preview.1` or `1.2.13+abc`.
+    version.split_whitespace().any(|token| {
+        let core = token
+            .trim_start_matches('v')
+            .split(['-', '+'])
+            .next()
+            .unwrap_or_default();
+        let mut parts = core.split('.');
+        let (Some(major), Some(minor), Some(patch)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return false;
+        };
+        matches!(
+            (major.parse::<u32>(), minor.parse::<u32>(), patch.parse::<u32>()),
+            (Ok(major), Ok(minor), Ok(patch))
+                if parts.next().is_none() && (major, minor, patch) >= (1, 2, 13)
+        )
+    })
 }
 
 #[derive(Deserialize)]
@@ -230,7 +285,7 @@ fn parse_quota(data: &[u8]) -> Option<UsageSnapshot> {
     }
     for (id, title, minutes) in [
         ("3p-5h", "Claude and GPT 5-hour", 300),
-        ("3p-weekly", "Claude and GPT weekly", 10_080),
+        ("3p-weekly", "Claude and GPT Weekly", 10_080),
     ] {
         if let Some(window) = window(id, minutes) {
             usage = usage.with_extra_rate_window(id, title, window);
@@ -267,8 +322,37 @@ mod tests {
     #[test]
     fn rejects_cli_versions_without_verified_print_usage_support() {
         assert!(!supports_quota(b"1.2.12"));
+        assert!(!supports_quota(b"1.2.12-rc.1"));
+        assert!(!supports_quota(b"1.2"));
         assert!(supports_quota(b"1.2.13"));
+        assert!(supports_quota(b"v1.2.13"));
+        assert!(supports_quota(b"agy 1.2.13 (build 42)"));
+        assert!(supports_quota(b"1.3.0-preview.1"));
         assert!(supports_quota(b"1.5.16\r\n"));
         assert!(!supports_quota(b"unknown"));
+    }
+
+    #[test]
+    fn parse_quota_handles_weekly_only_disabled_and_invalid_responses() {
+        let weekly_only = br#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[
+            {"buckets":[{"id":"gemini-5h","remaining_fraction":0.5,"disabled":true},{"id":"gemini-weekly","remaining_fraction":0.6}]}]}}}"#;
+        let usage = parse_quota(weekly_only).unwrap();
+        assert_eq!(usage.primary_label.as_deref(), Some("Gemini Weekly"));
+        assert!(usage.secondary.is_none());
+
+        let only_3p =
+            br#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[
+            {"buckets":[{"id":"3p-weekly","remaining_fraction":0.5}]}]}}}"#;
+        assert!(parse_quota(only_3p).is_none());
+
+        let out_of_range =
+            br#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[
+            {"buckets":[{"id":"gemini-5h","remaining_fraction":1.5}]}]}}}"#;
+        assert!(parse_quota(out_of_range).is_none());
+
+        let wrong_status =
+            br#"{"status":"ERROR","num_turns":0,"command":{"name":"usage","data":{"groups":[
+            {"buckets":[{"id":"gemini-5h","remaining_fraction":0.5}]}]}}}"#;
+        assert!(parse_quota(wrong_status).is_none());
     }
 }

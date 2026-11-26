@@ -2127,6 +2127,24 @@ fn personal_gemini_migration_preserves_other_providers_and_is_idempotent() {
         provider_order: vec!["gemini".into(), "codex".into(), "antigravity".into()],
         float_bar_provider_ids: vec!["codex".into(), "gemini".into()],
         provider_metrics: [("gemini".into(), MetricPreference::Weekly)].into(),
+        provider_usage_thresholds: [
+            (
+                "gemini".into(),
+                UsageThresholdOverride {
+                    high: Some(85.0),
+                    critical: Some(95.0),
+                },
+            ),
+            (
+                "gemini:weekly".into(),
+                UsageThresholdOverride {
+                    high: None,
+                    critical: Some(90.0),
+                },
+            ),
+        ]
+        .into(),
+        taskbar_account_by_provider: [("gemini".into(), "gemini-acct-uuid".into())].into(),
         ..Settings::default()
     };
     settings.migrate_personal_gemini();
@@ -2137,6 +2155,23 @@ fn personal_gemini_migration_preserves_other_providers_and_is_idempotent() {
     assert_eq!(
         settings.get_provider_metric(ProviderId::Antigravity),
         MetricPreference::Weekly
+    );
+    assert!(!settings.provider_usage_thresholds.contains_key("gemini"));
+    assert_eq!(
+        settings.provider_usage_thresholds["antigravity"].high,
+        Some(85.0)
+    );
+    assert_eq!(
+        settings.provider_usage_thresholds["antigravity:weekly"].critical,
+        Some(90.0)
+    );
+    assert_eq!(
+        settings
+            .taskbar_account_by_provider
+            .get("gemini")
+            .map(String::as_str),
+        Some("gemini-acct-uuid"),
+        "Gemini account UUID pin should stay under gemini rather than breaking Antigravity lookup"
     );
 
     let saved = serde_json::to_string(&settings).unwrap();

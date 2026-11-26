@@ -962,9 +962,18 @@ impl Settings {
 
     fn needs_personal_gemini_migration(&self) -> bool {
         #[cfg(windows)]
-        return !self.personal_gemini_migrated
-            && crate::providers::antigravity::cli_quota_configured()
-            && !crate::host::session::gemini_cli_signed_in();
+        {
+            if self.personal_gemini_migrated {
+                return false;
+            }
+            // Evaluate once at startup so repeated Settings::load() calls do not
+            // rescan PATH and mid-session changes cannot race with stale UI state.
+            static ELIGIBLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ELIGIBLE.get_or_init(|| {
+                crate::providers::antigravity::cli_quota_configured()
+                    && !crate::host::session::gemini_cli_signed_in()
+            })
+        }
         #[cfg(not(windows))]
         false
     }
@@ -993,10 +1002,23 @@ impl Settings {
                 .entry("antigravity".to_string())
                 .or_insert(metric);
         }
-        if let Some(account) = self.taskbar_account_by_provider.remove("gemini") {
-            self.taskbar_account_by_provider
-                .entry("antigravity".to_string())
-                .or_insert(account);
+        let threshold_keys: Vec<String> = self
+            .provider_usage_thresholds
+            .keys()
+            .filter(|k| *k == "gemini" || k.starts_with("gemini:"))
+            .cloned()
+            .collect();
+        for key in threshold_keys {
+            if let Some(override_val) = self.provider_usage_thresholds.remove(&key) {
+                let target = if key == "gemini" {
+                    "antigravity".to_string()
+                } else {
+                    format!("antigravity{}", &key["gemini".len()..])
+                };
+                self.provider_usage_thresholds
+                    .entry(target)
+                    .or_insert(override_val);
+            }
         }
         self.personal_gemini_migrated = true;
     }
