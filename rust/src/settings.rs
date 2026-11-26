@@ -219,6 +219,8 @@ mod tests;
 pub struct Settings {
     /// Enabled provider IDs (by CLI name)
     pub enabled_providers: HashSet<String>,
+    /// Personal Gemini preferences have been moved to Antigravity.
+    pub personal_gemini_migrated: bool,
 
     /// Refresh interval in seconds (0 = manual only)
     pub refresh_interval_secs: u64,
@@ -773,6 +775,7 @@ impl Default for Settings {
 
         Self {
             enabled_providers: enabled,
+            personal_gemini_migrated: false,
             refresh_interval_secs: 300, // 5 minutes
             refresh_all_providers_on_menu_open: false,
             start_minimized: false,
@@ -888,7 +891,10 @@ impl Settings {
     /// Load settings from disk
     pub fn load() -> Self {
         let (settings, pending_quarantine) = Self::load_from_disk(false);
-        if !pending_quarantine && !settings.has_legacy_credentials() {
+        if !pending_quarantine
+            && !settings.has_legacy_credentials()
+            && !settings.needs_personal_gemini_migration()
+        {
             return settings;
         }
 
@@ -907,21 +913,116 @@ impl Settings {
 
     /// Load and migrate settings while the caller holds the state write lock.
     fn load_unlocked() -> Self {
-        let (mut settings, _) = Self::load_from_disk(true);
+        let (settings, _) = Self::load_from_disk(true);
+        let migrate_personal_gemini = settings.needs_personal_gemini_migration();
+        settings.apply_load_migrations(
+            migrate_personal_gemini,
+            Self::migrate_legacy_credentials,
+            Self::write_to_disk,
+        )
+    }
 
-        if let Some(sanitized) = settings.migrate_legacy_credentials() {
+    /// Run the migrations that can write `settings.json` during a load.
+    ///
+    /// Inline credentials are `skip_serializing`, so any write while they are
+    /// still present would delete them. The personal Gemini migration only
+    /// saves once the credential migration has left nothing inline; otherwise
+    /// it waits for a later load.
+    fn apply_load_migrations(
+        mut self,
+        migrate_personal_gemini: bool,
+        migrate_credentials: impl FnOnce(&Self) -> Option<anyhow::Result<Self>>,
+        write: impl Fn(&Self) -> anyhow::Result<()>,
+    ) -> Self {
+        if let Some(sanitized) = migrate_credentials(&self) {
             match sanitized.and_then(|sanitized| {
-                Self::write_to_disk(&sanitized)?;
+                write(&sanitized)?;
                 Ok(sanitized)
             }) {
-                Ok(sanitized) => settings = sanitized,
+                Ok(sanitized) => self = sanitized,
                 Err(error) => {
                     tracing::warn!(%error, "Failed to migrate legacy settings credentials");
                 }
             }
         }
 
-        settings
+        if migrate_personal_gemini && !self.has_legacy_credentials() {
+            let mut migrated = self.clone();
+            migrated.migrate_personal_gemini();
+            match write(&migrated) {
+                Ok(()) => self = migrated,
+                Err(error) => {
+                    tracing::warn!(%error, "Failed to save Antigravity provider migration");
+                }
+            }
+        }
+
+        self
+    }
+
+    fn needs_personal_gemini_migration(&self) -> bool {
+        #[cfg(windows)]
+        {
+            if self.personal_gemini_migrated {
+                return false;
+            }
+            // Evaluate once at startup so repeated Settings::load() calls do not
+            // rescan PATH and mid-session changes cannot race with stale UI state.
+            static ELIGIBLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            *ELIGIBLE.get_or_init(|| {
+                crate::providers::antigravity::cli_quota_configured()
+                    && crate::host::session::gemini_cli_credentials_path().is_none_or(|path| {
+                        crate::providers::gemini::is_absent_or_personal_gemini_creds(&path)
+                    })
+            })
+        }
+        #[cfg(not(windows))]
+        false
+    }
+
+    fn migrate_personal_gemini(&mut self) {
+        if self.personal_gemini_migrated {
+            return;
+        }
+        if self.enabled_providers.remove("gemini") {
+            self.enabled_providers.insert("antigravity".to_string());
+        }
+        for order in [&mut self.provider_order, &mut self.float_bar_provider_ids] {
+            let mut has_antigravity = false;
+            order.retain_mut(|id| {
+                if id == "gemini" {
+                    *id = "antigravity".to_string();
+                }
+                if id != "antigravity" {
+                    return true;
+                }
+                !std::mem::replace(&mut has_antigravity, true)
+            });
+        }
+        if let Some(metric) = self.provider_metrics.remove("gemini") {
+            self.provider_metrics
+                .entry("antigravity".to_string())
+                .or_insert(metric);
+        }
+        let threshold_keys: Vec<String> = self
+            .provider_usage_thresholds
+            .keys()
+            .filter(|k| *k == "gemini" || k.starts_with("gemini:"))
+            .cloned()
+            .collect();
+        for key in threshold_keys {
+            if let Some(override_val) = self.provider_usage_thresholds.remove(&key) {
+                let target = if key == "gemini" {
+                    "antigravity".to_string()
+                } else {
+                    format!("antigravity{}", &key["gemini".len()..])
+                };
+                self.provider_usage_thresholds
+                    .entry(target)
+                    .or_insert(override_val);
+            }
+        }
+        self.personal_gemini_migrated = true;
     }
 
     /// Read `settings.json`. `allow_quarantine` is the rename from SBS-954 /

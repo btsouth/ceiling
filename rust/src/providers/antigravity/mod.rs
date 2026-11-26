@@ -3,6 +3,9 @@
 //! Fetches usage data from Antigravity's local language server probe
 //! Uses Windows process detection to find CSRF token
 
+#[cfg(windows)]
+mod cli_quota;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use regex_lite::Regex;
@@ -28,6 +31,11 @@ pub struct AntigravityProvider {
     metadata: ProviderMetadata,
 }
 
+#[cfg(windows)]
+pub(crate) fn cli_quota_configured() -> bool {
+    cli_quota::binary().is_some()
+}
+
 impl AntigravityProvider {
     pub fn new() -> Self {
         Self {
@@ -35,7 +43,7 @@ impl AntigravityProvider {
                 id: ProviderId::Antigravity,
                 display_name: "Antigravity",
                 session_label: "Claude",
-                weekly_label: "Gemini Pro",
+                weekly_label: "Gemini",
                 supports_opus: true,
                 supports_credits: false,
                 default_enabled: false,
@@ -779,11 +787,21 @@ impl Provider for AntigravityProvider {
     }
 
     async fn fetch_usage(&self, _ctx: &FetchContext) -> Result<ProviderFetchResult, ProviderError> {
+        let mut preferred_error = None;
+        #[cfg(windows)]
+        if let Some(binary) = cli_quota::binary() {
+            match cli_quota::fetch(binary).await {
+                Ok(result) => return Ok(result),
+                Err(error) => preferred_error = Some(error),
+            }
+        }
+
         tracing::debug!("Fetching Antigravity usage via local probe");
 
         match self.fetch_user_status().await {
             Ok(usage) => Ok(ProviderFetchResult::new(usage, "local")),
             Err(e) => {
+                let e = preferred_error.take().unwrap_or(e);
                 tracing::warn!("Antigravity probe failed: {}", e);
                 Err(e)
             }

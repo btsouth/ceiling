@@ -154,7 +154,7 @@ pub fn get_detected_provider_accounts() -> Vec<DetectedProviderAccount> {
         ),
         detected_account(
             "gemini",
-            "Gemini",
+            "Gemini Code Assist",
             if gemini_ready {
                 DetectedAccountStatus::Ready
             } else if gemini_installed {
