@@ -971,7 +971,9 @@ impl Settings {
             static ELIGIBLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
             *ELIGIBLE.get_or_init(|| {
                 crate::providers::antigravity::cli_quota_configured()
-                    && !crate::host::session::gemini_cli_signed_in()
+                    && crate::host::session::gemini_cli_credentials_path().is_none_or(|path| {
+                        crate::providers::gemini::is_absent_or_personal_gemini_creds(&path)
+                    })
             })
         }
         #[cfg(not(windows))]

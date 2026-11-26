@@ -2,27 +2,11 @@
 
 use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 
-use crate::cli::tty_runner::{TtyCommandOptions, TtyCommandRunner};
 use crate::core::{ProviderError, ProviderFetchResult, RateWindow, UsageSnapshot};
-
-const PLAN_READY: &str = "Ceiling Antigravity plan ready";
-const PLAN_CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
-
-struct PlanCache {
-    fetched_at: Instant,
-    plan: Option<String>,
-}
-
-fn plan_cache() -> &'static Mutex<Option<PlanCache>> {
-    static CACHE: OnceLock<Mutex<Option<PlanCache>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(None))
-}
 
 fn scratch_workspace() -> Result<(PathBuf, Option<tempfile::TempDir>), ProviderError> {
     if let Some(dir) = dirs::data_local_dir().map(|dir| dir.join("Ceiling/agy-scratch"))
@@ -35,13 +19,6 @@ fn scratch_workspace() -> Result<(PathBuf, Option<tempfile::TempDir>), ProviderE
     })?;
     Ok((temp.path().to_path_buf(), Some(temp)))
 }
-const EXPORT_PLAN: &str = r#"
-$status = [Console]::In.ReadToEnd() | ConvertFrom-Json
-if ($status.product -eq 'antigravity' -and $status.plan_tier -is [string] -and $status.plan_tier.Trim()) {
-    [IO.File]::WriteAllText($env:CEILING_ANTIGRAVITY_PLAN_FILE, $status.plan_tier)
-    [Console]::WriteLine('Ceiling Antigravity plan ready')
-}
-"#;
 
 pub(super) fn binary() -> Option<PathBuf> {
     which::which("agy").ok().or_else(|| {
@@ -86,7 +63,7 @@ pub(super) async fn fetch(binary: PathBuf) -> Result<ProviderFetchResult, Provid
     let output = crate::host::tokio_cli::output_with_timeout(&mut command, Duration::from_secs(12))
         .await
         .map_err(|_| ProviderError::Other("Antigravity CLI quota check did not finish.".into()))?;
-    let mut usage = output
+    let usage = output
         .status
         .success()
         .then(|| parse_quota(&output.stdout))
@@ -96,93 +73,7 @@ pub(super) async fn fetch(binary: PathBuf) -> Result<ProviderFetchResult, Provid
                 "Antigravity CLI did not report quota. Check sign-in and /usage in agy.".into(),
             )
         })?;
-    if let Some(trusted_workspace) = dirs::data_local_dir()
-        .map(|dir| dir.join("Ceiling/gemini-quota"))
-        .filter(|dir| dir.is_dir())
-    {
-        let cached = plan_cache().lock().ok().and_then(|guard| {
-            guard
-                .as_ref()
-                .filter(|entry| entry.fetched_at.elapsed() < PLAN_CACHE_TTL)
-                .map(|entry| entry.plan.clone())
-        });
-        usage.login_method = match cached {
-            Some(plan) => plan,
-            None => {
-                let scratch_dir = workspace_dir.clone();
-                let plan = tokio::task::spawn_blocking(move || {
-                    read_plan(&binary, &trusted_workspace, &scratch_dir)
-                })
-                .await
-                .ok()
-                .flatten();
-                if let Ok(mut guard) = plan_cache().lock() {
-                    *guard = Some(PlanCache {
-                        fetched_at: Instant::now(),
-                        plan: plan.clone(),
-                    });
-                }
-                plan
-            }
-        };
-    }
     Ok(ProviderFetchResult::new(usage, "cli"))
-}
-
-fn read_plan(
-    binary: &std::path::Path,
-    trusted_workspace: &std::path::Path,
-    scratch: &std::path::Path,
-) -> Option<String> {
-    let powershell = crate::host::windows_powershell_exe()?;
-    let powershell = powershell.to_str()?;
-    // agy runs status-line commands through cmd /c. Use the trusted system path
-    // only when it can be passed literally without shell quoting.
-    if !powershell.bytes().all(|byte| {
-        byte.is_ascii_alphanumeric() || matches!(byte, b'\\' | b':' | b'.' | b'_' | b'-')
-    }) {
-        return None;
-    }
-    let script = STANDARD.encode(
-        EXPORT_PLAN
-            .encode_utf16()
-            .flat_map(u16::to_le_bytes)
-            .collect::<Vec<_>>(),
-    );
-    let command =
-        format!("{powershell} -NoLogo -NoProfile -NonInteractive -EncodedCommand {script}");
-    let run_dir = tempfile::tempdir_in(scratch).ok()?;
-    let settings = run_dir.path().join("plan-settings.json");
-    let output = run_dir.path().join("plan.txt");
-    let config = serde_json::json!({
-        "statusLine": { "type": "command", "command": command, "enabled": true }
-    });
-    std::fs::write(&settings, config.to_string()).ok()?;
-    let mut options = TtyCommandOptions::new()
-        .with_working_directory(trusted_workspace.to_owned())
-        .with_extra_args(vec![
-            "--sandbox".into(),
-            "--settings".into(),
-            settings.to_string_lossy().into_owned(),
-        ])
-        .with_timeout(8.0)
-        .with_initial_delay(0.0)
-        .with_stop_on_substring(PLAN_READY)
-        .with_stop_on_substring("Do you trust the contents of this project?");
-    options.env.insert(
-        "CEILING_ANTIGRAVITY_PLAN_FILE".into(),
-        output.to_string_lossy().into_owned(),
-    );
-    TtyCommandRunner::new()
-        .run(&binary.to_string_lossy(), "", options)
-        .ok()?;
-    sanitize_plan(&std::fs::read_to_string(output).ok()?)
-}
-
-fn sanitize_plan(plan: &str) -> Option<String> {
-    let plan = plan.trim();
-    (!plan.is_empty() && plan.chars().count() <= 80 && !plan.chars().any(char::is_control))
-        .then(|| plan.to_owned())
 }
 
 fn supports_quota(version: &[u8]) -> bool {
@@ -299,16 +190,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn plan_badge_requires_a_nonempty_printable_tier() {
-        assert_eq!(
-            sanitize_plan(" Google AI Pro "),
-            Some("Google AI Pro".into())
-        );
-        assert_eq!(sanitize_plan(" "), None);
-        assert_eq!(sanitize_plan("Pro\nInjected"), None);
-    }
-
-    #[test]
     fn reads_zero_remaining_and_weekly_quota_from_the_command() {
         let response = br#"{"status":"SUCCESS","num_turns":0,"command":{"name":"usage","data":{"groups":[
             {"buckets":[{"id":"gemini-5h","remaining_fraction":0},{"id":"gemini-weekly","remaining_fraction":0.75}]},
@@ -328,7 +209,10 @@ mod tests {
         assert!(supports_quota(b"v1.2.13"));
         assert!(supports_quota(b"agy 1.2.13 (build 42)"));
         assert!(supports_quota(b"1.3.0-preview.1"));
-        assert!(supports_quota(b"1.5.16\r\n"));
+        assert!(supports_quota(
+            b"1.5.16
+"
+        ));
         assert!(!supports_quota(b"unknown"));
     }
 

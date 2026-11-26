@@ -45,14 +45,10 @@ Sign in to Antigravity CLI 1.2.13 or later and enable **Antigravity** in Ceiling
 The card shows the available Gemini five-hour and weekly quotas. Ceiling reads
 the [structured output of the CLI's read-only quota command](https://antigravity.google/docs/changelog?tab=cli).
 On Windows with Antigravity CLI installed, existing Gemini display preferences
-move to Antigravity when there is no Gemini CLI sign-in. The `gemini` provider
-ID remains available for Gemini Code Assist accounts.
-
-For the optional plan badge, Ceiling reads `plan_tier` from the Antigravity CLI
-[status line](https://antigravity.google/docs/cli/statusline/) in the dedicated
-`%LOCALAPPDATA%\Ceiling\gemini-quota` workspace. The workspace must already
-be trusted in Antigravity CLI. Ceiling leaves the badge hidden if the CLI does
-not report a plan.
+move to Antigravity when there is no Gemini CLI sign-in or when the stored
+Gemini CLI credentials belong to a personal Google account (no Workspace domain
+claim). Organization and Enterprise Gemini Code Assist accounts stay untouched,
+and the `gemini` provider ID remains available for Gemini Code Assist.
 
 ## Network policy
 

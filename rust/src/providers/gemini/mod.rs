@@ -13,6 +13,8 @@ use crate::core::{
 };
 
 pub use api::GeminiApi;
+#[cfg(windows)]
+pub(crate) use api::is_absent_or_personal_gemini_creds;
 
 /// Whether Gemini CLI is installed on this machine.
 pub fn cli_installed() -> bool {
