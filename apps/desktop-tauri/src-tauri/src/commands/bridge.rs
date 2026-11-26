@@ -286,13 +286,22 @@ impl ProviderUsageSnapshot {
         result: &ProviderFetchResult,
     ) -> Self {
         let usage = &result.usage;
-        let primary_label = primary_window_label(
-            id,
-            metadata.session_label,
-            metadata.weekly_label,
-            usage.primary.window_minutes,
-        )
-        .to_string();
+        let primary_label = usage
+            .primary_label
+            .as_deref()
+            .unwrap_or_else(|| {
+                primary_window_label(
+                    id,
+                    metadata.session_label,
+                    metadata.weekly_label,
+                    usage.primary.window_minutes,
+                )
+            })
+            .to_string();
+        let secondary_label = usage
+            .secondary_label
+            .as_deref()
+            .unwrap_or(metadata.weekly_label);
 
         // Every long window the provider reports is a candidate, in the order
         // the UI lists them so an exact tie keeps the more prominent one.
@@ -302,7 +311,7 @@ impl ProviderUsageSnapshot {
                 usage
                     .secondary
                     .as_ref()
-                    .map(|window| (metadata.weekly_label, window)),
+                    .map(|window| (secondary_label, window)),
             )
             .chain(
                 usage
@@ -353,7 +362,7 @@ impl ProviderUsageSnapshot {
             secondary_label: usage
                 .secondary
                 .as_ref()
-                .map(|_| metadata.weekly_label.to_string()),
+                .map(|_| secondary_label.to_string()),
             model_specific: usage
                 .model_specific
                 .as_ref()

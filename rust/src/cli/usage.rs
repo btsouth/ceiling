@@ -544,11 +544,22 @@ fn append_usage_window_lines(
     metadata: &crate::core::ProviderMetadata,
     use_color: bool,
 ) {
-    append_window_line(lines, metadata.session_label, &usage.primary, use_color);
+    append_window_line(
+        lines,
+        usage
+            .primary_label
+            .as_deref()
+            .unwrap_or(metadata.session_label),
+        &usage.primary,
+        use_color,
+    );
     append_secondary_window_line(
         lines,
         usage.secondary.as_ref(),
-        metadata.weekly_label,
+        usage
+            .secondary_label
+            .as_deref()
+            .unwrap_or(metadata.weekly_label),
         use_color,
     );
     append_model_specific_line(lines, usage.model_specific.as_ref(), use_color);
@@ -632,13 +643,19 @@ pub fn render_brief_text(provider: ProviderId, result: &ProviderFetchResult) -> 
         .unwrap_or_else(|| "n/a".to_string());
     let mut parts = vec![format!(
         "{} {}",
-        metadata.session_label,
+        usage
+            .primary_label
+            .as_deref()
+            .unwrap_or(metadata.session_label),
         format_percent(usage.primary.used_percent)
     )];
     if let Some(secondary) = &usage.secondary {
         parts.push(format!(
             "{} {}",
-            metadata.weekly_label,
+            usage
+                .secondary_label
+                .as_deref()
+                .unwrap_or(metadata.weekly_label),
             format_percent(secondary.used_percent)
         ));
     }
