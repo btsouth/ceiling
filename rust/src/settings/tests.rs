@@ -1790,9 +1790,9 @@ fn unlocked_corrupt_read_does_not_rename_a_concurrent_repair() {
     let original = "{\"refresh_interval_secs\":\"60\"";
     std::fs::write(&path, original).expect("write corrupt settings");
 
-    let (loaded, pending_quarantine) = Settings::read_path(&path, false);
+    let (loaded, state) = Settings::read_path(&path, false);
     assert!(
-        pending_quarantine,
+        state == ReadState::PendingQuarantine,
         "an unlocked parse failure must ask load() to retry under the lock"
     );
     assert_eq!(
@@ -1814,9 +1814,9 @@ fn unlocked_corrupt_read_does_not_rename_a_concurrent_repair() {
 
     // load() re-reads under the lock. The file is valid now, so quarantine
     // must not run and the repair must stay.
-    let (reloaded, pending_after_repair) = Settings::read_path(&path, true);
+    let (reloaded, state_after_repair) = Settings::read_path(&path, true);
     assert!(
-        !pending_after_repair,
+        state_after_repair == ReadState::Clean,
         "a successful locked re-read has nothing left to quarantine"
     );
     assert_eq!(reloaded.refresh_interval_secs, 42);
@@ -1860,15 +1860,15 @@ fn dpapi_protected_settings() -> String {
 /// snapshot. Tests use this instead of [`Settings::try_update`] so they do
 /// not touch the process config dir.
 fn try_update_write_at(path: &std::path::Path) {
-    let (settings, _) = Settings::read_path(path, true);
-    let json = serde_json::to_string_pretty(&settings).expect("serialize defaults");
-    crate::secure_file::write_string(path, &json).expect("try_update write");
+    let (settings, state) = Settings::read_path(path, true);
+    assert_eq!(state, ReadState::Clean);
+    Settings::write_to_path(path, &settings, fs_rename).expect("try_update write");
 }
 
 fn assert_read_failure_is_pending_when_unlocked(path: &std::path::Path, original: &[u8]) {
-    let (loaded, pending_quarantine) = Settings::read_path(path, false);
+    let (loaded, state) = Settings::read_path(path, false);
     assert!(
-        pending_quarantine,
+        state == ReadState::PendingQuarantine,
         "an unlocked read failure must ask load() to retry under the lock"
     );
     assert_eq!(
@@ -1887,9 +1887,9 @@ fn assert_read_failure_is_pending_when_unlocked(path: &std::path::Path, original
 }
 
 fn assert_read_failure_quarantines_when_locked(path: &std::path::Path, original: &[u8]) {
-    let (loaded, pending_quarantine) = Settings::read_path(path, true);
+    let (loaded, state) = Settings::read_path(path, true);
     assert!(
-        !pending_quarantine,
+        state == ReadState::Clean,
         "a locked read failure quarantines immediately"
     );
     assert_eq!(
@@ -1964,6 +1964,109 @@ fn try_update_does_not_wipe_an_undecodable_settings_file() {
         written.refresh_interval_secs,
         Settings::default().refresh_interval_secs
     );
+}
+
+fn failing_rename(_: &std::path::Path, _: &std::path::Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "locked by another process",
+    ))
+}
+
+/// A second quarantine must not replace an earlier `.bak`, which may be the
+/// user's only good copy.
+#[test]
+fn quarantine_keeps_an_existing_backup_and_picks_the_next_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let backup = Settings::backup_path(&path);
+    let earlier_backup = "{\"refresh_interval_secs\": 90}";
+    std::fs::write(&backup, earlier_backup).expect("write earlier backup");
+    let first = dir.path().join("settings.json.bak.1");
+    std::fs::write(&first, "older").expect("write .bak.1");
+
+    let corrupt = "{\"refresh_interval_secs\":\"60\"";
+    std::fs::write(&path, corrupt).expect("write corrupt settings");
+
+    let (_, state) = Settings::read_path(&path, true);
+    assert_eq!(state, ReadState::Clean);
+    assert!(!path.exists(), "the live path must be vacated");
+    assert_eq!(
+        std::fs::read_to_string(&backup).expect("earlier backup"),
+        earlier_backup,
+        "an existing .bak must be preserved"
+    );
+    assert_eq!(std::fs::read_to_string(&first).expect(".bak.1"), "older");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("settings.json.bak.2")).expect(".bak.2"),
+        corrupt,
+        "the new quarantine goes to the first unused name"
+    );
+}
+
+#[test]
+fn first_quarantine_still_uses_the_plain_bak_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    assert_eq!(
+        Settings::available_backup_path(&path),
+        Some(dir.path().join("settings.json.bak"))
+    );
+}
+
+/// When the move aside fails (antivirus lock, permissions), the live file is
+/// the only copy. Reporting it as quarantined would let the next save write
+/// defaults over it.
+#[test]
+fn failed_quarantine_rename_never_clobbers_the_live_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let original = unsupported_protected_settings();
+    std::fs::write(&path, &original).expect("write unsupported ProtectedFile");
+
+    let (loaded, state) = Settings::read_path_with(&path, true, failing_rename);
+    assert_eq!(state, ReadState::QuarantineFailed);
+    assert_eq!(
+        loaded.refresh_interval_secs,
+        Settings::default().refresh_interval_secs
+    );
+    assert!(!Settings::backup_path(&path).exists());
+
+    let error = Settings::write_to_path(&path, &loaded, failing_rename)
+        .expect_err("saving defaults over an unbacked-up file must be refused");
+    assert!(error.to_string().contains("refusing to overwrite"));
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("live file"),
+        original,
+        "the live file must be untouched"
+    );
+}
+
+/// A valid live file is replaced normally, and an undecodable one that can
+/// be moved aside is quarantined before the write.
+#[test]
+fn write_to_path_quarantines_an_undecodable_live_file_first() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("settings.json");
+    let corrupt = "{\"refresh_interval_secs\":\"60\"";
+    std::fs::write(&path, corrupt).expect("write corrupt settings");
+
+    let mut settings = Settings {
+        refresh_interval_secs: 77,
+        ..Settings::default()
+    };
+    Settings::write_to_path(&path, &settings, fs_rename).expect("write");
+    assert_eq!(
+        std::fs::read_to_string(Settings::backup_path(&path)).expect("backup"),
+        corrupt
+    );
+
+    settings.refresh_interval_secs = 78;
+    Settings::write_to_path(&path, &settings, fs_rename).expect("rewrite valid file");
+    let (reloaded, state) = Settings::read_path(&path, true);
+    assert_eq!(state, ReadState::Clean);
+    assert_eq!(reloaded.refresh_interval_secs, 78);
+    assert!(!dir.path().join("settings.json.bak.1").exists());
 }
 
 /// SBS-964: a privacy-conscious reader who leaves incident badges off still
