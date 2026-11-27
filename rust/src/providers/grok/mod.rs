@@ -673,6 +673,9 @@ impl GrokCredentials {
             };
             let mut root: Value = serde_json::from_str(&text)
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            if root.as_object().is_some_and(|map| map.is_empty()) {
+                return Ok(GrokPersistOutcome::AuthFileMissing);
+            }
             if let Some(disk_refresh) = disk_refresh_token(&root, &self.scope)
                 && disk_refresh != exchanged_refresh_token.trim()
             {
@@ -1645,7 +1648,7 @@ mod tests {
             "https://auth.x.ai.evil.test",
             "https://evilauth.x.ai",
             "https://auth.x.ai@evil.test",
-            "https://user:pass@auth.x.ai",
+            "https://user:example@auth.x.ai",
             "https://auth.x.ai:8443",
             "https://auth.x.ai/redirect",
             "https://auth.x.ai/?next=evil",
@@ -1653,11 +1656,10 @@ mod tests {
             "auth.x.ai",
             "not a url",
         ] {
-            let error = grok_token_url(Some(issuer)).expect_err(issuer);
-            assert!(
-                matches!(error, ProviderError::OAuth(_)),
-                "{issuer} should be rejected, got {error:?}"
-            );
+            assert!(matches!(
+                grok_token_url(Some(issuer)),
+                Err(ProviderError::OAuth(_))
+            ));
         }
     }
 

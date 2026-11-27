@@ -921,7 +921,12 @@ impl Settings {
     /// user's only good copy, so a new quarantine never replaces one.
     pub(crate) fn available_backup_path(path: &std::path::Path) -> Option<PathBuf> {
         let base = Self::backup_path(path);
-        let unused = |candidate: &std::path::Path| std::fs::symlink_metadata(candidate).is_err();
+        let unused = |candidate: &std::path::Path| {
+            matches!(
+                std::fs::symlink_metadata(candidate),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound
+            )
+        };
         if unused(&base) {
             return Some(base);
         }

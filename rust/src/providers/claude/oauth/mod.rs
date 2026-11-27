@@ -273,7 +273,7 @@ impl ClaudeOAuthFetcher {
     async fn ensure_fresh_credentials(
         &self,
         mut credentials: ClaudeOAuthCredentials,
-        source: credentials_store::CredentialSource,
+        mut source: credentials_store::CredentialSource,
     ) -> ClaudeOAuthCredentials {
         // Prefer an in-memory refreshed token if it is fresher than what we just
         // read from disk (covers a prior persist that failed to write). Scoped
@@ -299,6 +299,7 @@ impl ClaudeOAuthFetcher {
                 return disk;
             }
             credentials = disk;
+            source = disk_source;
         }
 
         let Some(refresh_token) = credentials.refresh_token.clone() else {

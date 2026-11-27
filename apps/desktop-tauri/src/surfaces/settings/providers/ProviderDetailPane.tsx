@@ -422,15 +422,17 @@ export function ProviderDetailPane({
       setRevokeStatus(t("CredentialRevoked"));
       selectedAccountIdRef.current = null;
       setSelectedAccountId(null);
+      let refreshError: string | null = null;
       try {
         await refreshProviders();
       } catch (e) {
-        if (providerIdRef.current === revokedProviderId) {
-          setError(String(e));
-        }
+        refreshError = String(e);
       }
       if (providerIdRef.current !== revokedProviderId) return;
       await load(revokedProviderId);
+      if (refreshError && providerIdRef.current === revokedProviderId) {
+        setError(refreshError);
+      }
     } catch (e) {
       if (providerIdRef.current === revokedProviderId) {
         setError(String(e));
