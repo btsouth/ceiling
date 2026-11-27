@@ -10,6 +10,8 @@ use std::time::Duration;
 /// VS Code's GitHub OAuth Client ID (public)
 const CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 const SCOPES: &str = "read:user";
+/// Per-request deadline for the device-code and token-poll calls.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Device code response from GitHub
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -100,7 +102,10 @@ pub struct CopilotDeviceFlow {
 impl CopilotDeviceFlow {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .timeout(HTTP_TIMEOUT)
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new()),
         }
     }
 

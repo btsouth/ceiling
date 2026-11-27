@@ -6,8 +6,6 @@
 mod api;
 
 use async_trait::async_trait;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 
 use crate::core::{
     FetchContext, Provider, ProviderError, ProviderFetchResult, ProviderId, ProviderMetadata,
@@ -144,15 +142,12 @@ fn which_codex() -> Option<std::path::PathBuf> {
 fn detect_codex_version() -> Option<String> {
     let codex_path = which_codex()?;
 
-    #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
     let mut cmd = std::process::Command::new(codex_path);
     cmd.args(["--version"]);
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-
-    let output = cmd.output().ok()?;
+    let output = crate::providers::cli_probe::output_with_timeout(
+        &mut cmd,
+        crate::providers::cli_probe::PROBE_TIMEOUT,
+    )?;
 
     if output.status.success() {
         let version_str = String::from_utf8_lossy(&output.stdout);

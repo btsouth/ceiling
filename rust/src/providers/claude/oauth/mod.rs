@@ -306,6 +306,18 @@ impl ClaudeOAuthFetcher {
             return credentials;
         };
 
+        // Claude rotates the refresh token on every exchange. If the rotated
+        // token cannot be written back (keychain writes disabled, credentials
+        // file gone or read-only, environment-only token), refreshing would
+        // retire the token Claude Code still holds and sign the CLI out. Keep
+        // the expired credentials and let the normal expired handling run.
+        if !credentials_store::can_persist_refreshed_for_source(&source) {
+            tracing::debug!(
+                "Skipping Claude OAuth refresh: the rotated token could not be saved back to its source"
+            );
+            return credentials;
+        }
+
         match refresh::refresh_access_token(&self.client, &refresh_token, &credentials).await {
             Ok(refreshed) => {
                 // Persist before caching. If another process rotated the token

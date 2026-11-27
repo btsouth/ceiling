@@ -8,14 +8,13 @@ use crate::core::{NamedRateWindow, ProviderError, RateWindow, UsageSnapshot};
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{Map, Value};
-use std::process::Command;
-
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::time::Duration;
 
 const DEFAULT_GITHUB_HOST: &str = "github.com";
 const COPILOT_USAGE_PATH: &str = "/copilot_internal/user";
 const GITHUB_USER_PATH: &str = "/user";
+/// `gh auth token` reads a local keyring entry; it should never take long.
+const GH_CLI_TIMEOUT: Duration = Duration::from_secs(10);
 
 // Credential Manager targets to try
 const CREDENTIAL_TARGETS: &[&str] = &[
@@ -62,7 +61,7 @@ impl CopilotApi {
         api_key: Option<&str>,
         github_host: Option<&str>,
     ) -> Result<UsageSnapshot, ProviderError> {
-        let token = self.load_token(api_key, github_host)?;
+        let token = self.load_token(api_key, github_host).await?;
         self.fetch_usage_with_token(&token, github_host).await
     }
 
@@ -72,7 +71,7 @@ impl CopilotApi {
         token: &str,
         github_host: Option<&str>,
     ) -> Result<UsageSnapshot, ProviderError> {
-        let api_url = copilot_usage_url(github_host);
+        let api_url = copilot_usage_url(github_host)?;
         let response = self
             .client
             .get(api_url)
@@ -111,7 +110,7 @@ impl CopilotApi {
         token: &str,
         github_host: Option<&str>,
     ) -> Result<GitHubIdentity, ProviderError> {
-        let url = github_api_url(github_host, GITHUB_USER_PATH);
+        let url = github_api_url(github_host, GITHUB_USER_PATH)?;
         let response = self
             .client
             .get(url)
@@ -140,7 +139,7 @@ impl CopilotApi {
             .map_err(|e| ProviderError::Parse(e.to_string()))
     }
 
-    fn load_token(
+    async fn load_token(
         &self,
         api_key: Option<&str>,
         github_host: Option<&str>,
@@ -150,7 +149,8 @@ impl CopilotApi {
             return Ok(key);
         }
 
-        if let Some(token) = load_gh_cli_token(github_host) {
+        let host = validated_github_host(github_host)?;
+        if let Some(token) = load_gh_cli_token(&host).await {
             tracing::debug!("Using Copilot token from GitHub CLI auth");
             return Ok(token);
         }
@@ -530,32 +530,72 @@ impl QuotaSnapshot {
 
 // --- Helper functions ---
 
-fn github_api_url(github_host: Option<&str>, path: &str) -> String {
-    let host = normalized_api_host(github_host);
-    format!("https://{host}{path}")
+fn github_api_url(github_host: Option<&str>, path: &str) -> Result<String, ProviderError> {
+    let host = normalized_api_host(github_host)?;
+    Ok(format!("https://{host}{path}"))
 }
 
-fn copilot_usage_url(github_host: Option<&str>) -> String {
+fn copilot_usage_url(github_host: Option<&str>) -> Result<String, ProviderError> {
     github_api_url(github_host, COPILOT_USAGE_PATH)
 }
 
-fn normalized_api_host(github_host: Option<&str>) -> String {
-    let host = github_host
+fn invalid_github_host() -> ProviderError {
+    ProviderError::Other("Invalid GitHub host".to_string())
+}
+
+/// The bare GitHub host (`github.com` or an enterprise host) the user configured.
+///
+/// The token is sent to whatever this resolves to, so anything beyond a plain
+/// DNS name is rejected: userinfo (`ghe.example.com@evil.test`), ports, paths,
+/// queries, fragments, IP literals and non-HTTP(S) schemes.
+fn validated_github_host(github_host: Option<&str>) -> Result<String, ProviderError> {
+    let raw = github_host
         .map(str::trim)
         .filter(|host| !host.is_empty())
-        .unwrap_or(DEFAULT_GITHUB_HOST)
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .trim_end_matches('/')
-        .to_ascii_lowercase();
+        .unwrap_or(DEFAULT_GITHUB_HOST);
+    let candidate = if raw.contains("://") {
+        raw.to_string()
+    } else {
+        format!("https://{raw}")
+    };
+    let url = url::Url::parse(&candidate).map_err(|_| invalid_github_host())?;
+    let plain = matches!(url.scheme(), "https" | "http")
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && matches!(url.path(), "" | "/");
+    let Some(url::Host::Domain(host)) = url.host() else {
+        return Err(invalid_github_host());
+    };
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let valid_labels = !host.is_empty()
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        });
+    if !plain || !valid_labels {
+        return Err(invalid_github_host());
+    }
+    Ok(host)
+}
 
-    if host == DEFAULT_GITHUB_HOST || host == "api.github.com" {
+fn normalized_api_host(github_host: Option<&str>) -> Result<String, ProviderError> {
+    let host = validated_github_host(github_host)?;
+
+    Ok(if host == DEFAULT_GITHUB_HOST || host == "api.github.com" {
         "api.github.com".to_string()
     } else if host.starts_with("api.") {
         host
     } else {
         format!("api.{host}")
-    }
+    })
 }
 
 fn normalize_token(raw: Option<&str>) -> Option<String> {
@@ -581,15 +621,24 @@ fn normalize_token(raw: Option<&str>) -> Option<String> {
     }
 }
 
-fn load_gh_cli_token(github_host: Option<&str>) -> Option<String> {
-    let host = github_host
-        .map(str::trim)
-        .filter(|host| !host.is_empty())
-        .unwrap_or(DEFAULT_GITHUB_HOST);
-    let mut command = Command::new("gh");
-    command.args(["auth", "token", "--hostname", host]);
-    hide_windows_console(&mut command);
-    let output = command.output().ok()?;
+async fn load_gh_cli_token(host: &str) -> Option<String> {
+    let mut command = tokio::process::Command::new("gh");
+    command
+        .args(["auth", "token", "--hostname", host])
+        .stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    let output =
+        match crate::host::tokio_cli::output_with_timeout(&mut command, GH_CLI_TIMEOUT).await {
+            Ok(output) => output,
+            Err(error) => {
+                tracing::debug!("GitHub CLI token lookup unavailable: {error}");
+                return None;
+            }
+        };
 
     if !output.status.success() {
         return None;
@@ -598,15 +647,6 @@ fn load_gh_cli_token(github_host: Option<&str>) -> Option<String> {
     let token = String::from_utf8(output.stdout).ok()?;
     normalize_token(Some(&token))
 }
-
-#[cfg(windows)]
-fn hide_windows_console(command: &mut Command) {
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn hide_windows_console(_command: &mut Command) {}
 
 fn parse_iso_date(s: &str) -> Option<DateTime<Utc>> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
@@ -936,17 +976,73 @@ mod tests {
 
     #[test]
     fn normalizes_enterprise_hosts() {
+        for (input, expected) in [
+            (None, "api.github.com"),
+            (Some(""), "api.github.com"),
+            (Some("github.com"), "api.github.com"),
+            (Some("GitHub.com"), "api.github.com"),
+            (Some("api.github.com"), "api.github.com"),
+            (Some("github.example.com"), "api.github.example.com"),
+            (Some("api.github.example.com"), "api.github.example.com"),
+            (Some("https://github.example.com"), "api.github.example.com"),
+            (
+                Some("https://github.example.com/"),
+                "api.github.example.com",
+            ),
+            (Some("http://github.example.com"), "api.github.example.com"),
+            (Some("  ghe.example.com.  "), "api.ghe.example.com"),
+        ] {
+            assert_eq!(
+                normalized_api_host(input).unwrap(),
+                expected,
+                "input {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_github_hosts_that_could_redirect_the_token() {
+        for input in [
+            "ghe.example.com@evil.test",
+            "https://ghe.example.com@evil.test",
+            "https://user:pass@ghe.example.com",
+            "ghe.example.com:8443",
+            "ghe.example.com/evil",
+            "https://ghe.example.com/api/v3",
+            "ghe.example.com?x=1",
+            "ghe.example.com#frag",
+            "ftp://ghe.example.com",
+            "127.0.0.1",
+            "[::1]",
+            "ghe_example.com",
+            "-ghe.example.com",
+            "ghe..example.com",
+            "ghe example.com",
+        ] {
+            let error = normalized_api_host(Some(input)).expect_err(input);
+            assert!(
+                matches!(&error, ProviderError::Other(message) if message == "Invalid GitHub host"),
+                "{input} should be rejected, got {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn api_urls_are_built_from_the_validated_host() {
         assert_eq!(
-            normalized_api_host(Some("github.com")),
-            "api.github.com".to_string()
+            copilot_usage_url(Some("ghe.example.com")).unwrap(),
+            "https://api.ghe.example.com/copilot_internal/user"
         );
-        assert_eq!(
-            normalized_api_host(Some("github.example.com")),
-            "api.github.example.com".to_string()
-        );
-        assert_eq!(
-            normalized_api_host(Some("api.github.example.com")),
-            "api.github.example.com".to_string()
-        );
+        assert!(github_api_url(Some("ghe.example.com@evil.test"), GITHUB_USER_PATH).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_invalid_host_fails_before_any_token_lookup() {
+        let api = CopilotApi::new();
+        let error = api
+            .load_token(None, Some("ghe.example.com@evil.test"))
+            .await
+            .expect_err("invalid host");
+        assert!(matches!(error, ProviderError::Other(message) if message == "Invalid GitHub host"));
     }
 }

@@ -12,6 +12,7 @@ pub mod azureopenai;
 pub mod bedrock;
 pub mod chutes;
 pub mod claude;
+pub(crate) mod cli_probe;
 pub mod codebuff;
 pub mod codex;
 pub mod commandcode;

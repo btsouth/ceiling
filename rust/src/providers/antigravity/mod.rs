@@ -36,9 +36,9 @@ impl AntigravityProvider {
             metadata: ProviderMetadata {
                 id: ProviderId::Antigravity,
                 display_name: "Antigravity",
-                session_label: "Claude",
-                weekly_label: "Gemini",
-                supports_opus: true,
+                session_label: "Gemini 5-hour",
+                weekly_label: "Gemini Weekly",
+                supports_opus: false,
                 supports_credits: false,
                 default_enabled: false,
                 is_primary: false,

@@ -121,13 +121,20 @@ impl VertexAIProvider {
             const CREATE_NO_WINDOW: u32 = 0x08000000;
 
             let mut cmd = tokio::process::Command::new(gcloud);
-            cmd.args(["auth", "print-access-token"]);
+            cmd.args(["auth", "print-access-token"])
+                .stdin(std::process::Stdio::null());
             #[cfg(windows)]
             cmd.creation_flags(CREATE_NO_WINDOW);
 
-            let output = crate::host::tokio_cli::output(&mut cmd)
-                .await
-                .map_err(|e| ProviderError::Other(e.to_string()))?;
+            let output = crate::host::tokio_cli::output_with_timeout(
+                &mut cmd,
+                std::time::Duration::from_secs(20),
+            )
+            .await
+            .map_err(|error| match error {
+                crate::host::tokio_cli::Error::TimedOut => ProviderError::Timeout,
+                crate::host::tokio_cli::Error::Io(error) => ProviderError::Other(error.to_string()),
+            })?;
 
             if output.status.success() {
                 let token = String::from_utf8_lossy(&output.stdout).trim().to_string();

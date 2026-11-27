@@ -60,8 +60,9 @@ pub struct UsageArgs {
     #[arg(long = "web-debug-dump-html")]
     pub web_debug_dump_html: bool,
 
-    /// Send Antigravity planInfo fields to stderr (debug)
-    #[arg(long = "antigravity-plan-debug")]
+    /// Retired Antigravity planInfo debug switch; accepted and ignored so
+    /// existing scripts keep working.
+    #[arg(long = "antigravity-plan-debug", hide = true)]
     pub antigravity_plan_debug: bool,
 
     /// Print one compact line per provider
