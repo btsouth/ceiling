@@ -1,5 +1,21 @@
 # Changelog
 
+## [Ceiling] 1.5.52 - 2026-11-27
+
+Antigravity now uses Google's official read-only `agy` CLI exclusively, Gemini Code Assist and Claude Code session handling are safer, and desktop startup, token accounts, updater selection, and Settings error handling are hardened.
+
+### Changed
+- **Antigravity uses the official `agy` CLI only.** Removed the unofficial local language-server process scraping, CSRF token extraction, and Connect RPC fallback to avoid Google Antigravity Terms of Service risk. Antigravity quota now reads exclusively from `agy --sandbox -p /usage --output-format json` (requires Antigravity CLI 1.2.13 or later on Windows), with matching Gemini 5-hour / Gemini Weekly labels and Settings provenance text. Thanks to @jayn2u.
+- **Gemini Code Assist is strictly read-only.** Ceiling still reads your existing `~/.gemini/oauth_creds.json` sign-in, but no longer extracts OAuth client secrets from Gemini CLI's bundle or modifies `oauth_creds.json` on expiry. Run `gemini` to refresh an expired session.
+
+### Fixed
+- **Prevent Claude Code sign-outs during OAuth refresh.** Ceiling now verifies the credentials store (file, parent directory, or keyring writes) is writable before exchanging Claude Code's rotating refresh token.
+- **Harden Grok, Copilot, login browser URLs, and CLI subprocesses.** Grok refresh now allowlists `auth.x.ai` / `accounts.x.ai`, refuses to recreate `auth.json` after logout, and verifies the on-disk refresh token before writing. Copilot Enterprise validates hostnames strictly with `url::Url` and no longer falls back to `github.com` credentials on enterprise hosts. Login browser opening allowlists provider auth hosts, and CLI probes use timeout-bounded execution with closed stdin.
+- **Remove unused browser-cookie scanning code and test.** Removed dead browser-wide cookie extraction helpers and the Chrome cookie test so the codebase matches Ceiling's no-browser-scanning policy.
+- **Fix desktop startup deadlock and WebView2 recovery loops.** Visible startup now opens the main window on the main thread, WebView2 automatic rebuilds cap at 3 per 60 seconds with watchdog/replay guards, and window/tray/updater handlers recover cleanly from poisoned locks.
+- **Fix token-account switching, Settings errors, privacy masking, and flyout localization.** Switching or removing a token account now clears cached readings and refreshes immediately, with capacity events and history scoped per active token account. "Switch account" now appears only for providers with in-app login (Claude, Codex, Copilot), Settings displays action errors inline and respects "Hide personal info", and the taskbar flyout is fully localized in English and Simplified Chinese.
+- **Protect self-updater and settings backups.** The GitHub self-updater now excludes Microsoft Store `-Store-Setup.exe` bundles from selection while still pruning superseded ones, cleans up abandoned staged installers safely, and settings quarantine preserves existing `.bak` backups and refuses to overwrite an undecodable file if rename fails.
+
 ## [Ceiling] 1.5.51 - 2026-11-26
 
 Antigravity shows personal Gemini subscription quotas from the Antigravity CLI, Claude Switch account completes through the CLI localhost callback, and cookie copy instructions are clearer.
