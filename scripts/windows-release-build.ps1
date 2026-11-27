@@ -372,7 +372,7 @@ try {
         throw "pnpm tauri build exited with code $tauriExitCode"
     }
 
-    if (-not $freshSourceExe) {
+    if (-not (Test-Path $sourceExe)) {
         throw "Missing freshly built Tauri binary: $sourceExe"
     }
 
