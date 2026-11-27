@@ -51,6 +51,9 @@ pub struct ProviderDetail {
     pub dashboard_url: Option<String>,
     pub status_page_url: Option<String>,
     pub buy_credits_url: Option<String>,
+    /// True when `trigger_provider_login` can sign this provider in from the
+    /// app (gates the "Switch account" quick action).
+    pub supports_login: bool,
 
     // True if the shared backend has produced any snapshot yet.
     pub has_snapshot: bool,
@@ -112,6 +115,7 @@ pub(crate) fn build_provider_detail(provider_id: &str) -> Result<ProviderDetail,
         } else {
             None
         },
+        supports_login: super::system::supports_in_app_login(id),
         has_snapshot: false,
         cookie_source: provider_cookie_source_lookup(&settings, id.cli_name()),
         region: provider_region_lookup(&settings, id.cli_name()),

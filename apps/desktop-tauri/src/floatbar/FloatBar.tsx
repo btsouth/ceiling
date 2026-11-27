@@ -97,7 +97,7 @@ function providerKey(provider: ProviderUsageSnapshot): string {
  *
  * Enabling a provider in Settings does not mean it has capacity yet. Until the
  * first successful fetch, the cache holds an error placeholder (CLI missing,
- * language server not running, sign-in needed). Those belong on Overview and
+ * `agy` not installed, sign-in needed). Those belong on Overview and
  * Settings so the user can finish setup — not as a "—" pill that steals space
  * and, for providers whose session window is named after a model family
  * (Antigravity's primary label is "Claude"), mislabels the seat entirely.

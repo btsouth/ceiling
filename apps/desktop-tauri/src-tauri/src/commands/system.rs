@@ -21,6 +21,13 @@ fn cli_login_kind(id: ProviderId) -> Option<CliLoginKind> {
     }
 }
 
+/// Whether `trigger_provider_login` can sign this provider in from the app.
+/// Kept next to `cli_login_kind` so the Settings "Switch account" button and
+/// the command it calls can never disagree.
+pub(super) fn supports_in_app_login(id: ProviderId) -> bool {
+    id == ProviderId::Copilot || cli_login_kind(id).is_some()
+}
+
 fn login_phase_name(phase: LoginPhase) -> &'static str {
     match phase {
         LoginPhase::Idle => "idle",

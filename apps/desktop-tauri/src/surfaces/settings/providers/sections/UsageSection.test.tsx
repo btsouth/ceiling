@@ -57,6 +57,7 @@ function provider(): ProviderDetail {
     dashboardUrl: null,
     statusPageUrl: null,
     buyCreditsUrl: null,
+    supportsLogin: false,
     hasSnapshot: true,
     cookieSource: null,
     region: null,

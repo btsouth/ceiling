@@ -1114,6 +1114,8 @@ export interface ProviderDetail {
   dashboardUrl: string | null;
   statusPageUrl: string | null;
   buyCreditsUrl: string | null;
+  /** True when the app can sign this provider in (Claude, Codex, Copilot). */
+  supportsLogin: boolean;
 
   hasSnapshot: boolean;
 

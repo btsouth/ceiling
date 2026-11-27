@@ -66,6 +66,11 @@ pub fn toggle(app: &tauri::AppHandle) {
         }
     };
     crate::taskbar_widget::apply_state(app, &settings);
+    // Called from both the tray menu and the global shortcut: keep the tray
+    // checkbox and any open Settings surface in step with the new value.
+    notify_settings_changed(app);
+    crate::events::emit_settings_changed(app);
+    crate::tray_bridge::rebuild_tray_menu(app);
 }
 
 /// Bring the floating-bar window in line with persisted settings: open,

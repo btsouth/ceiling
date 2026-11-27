@@ -142,7 +142,8 @@ pub fn add_token_account(
 
 /// Remove a token account by UUID string.
 #[tauri::command]
-pub fn remove_token_account(
+pub async fn remove_token_account(
+    app: tauri::AppHandle,
     provider_id: String,
     account_id: String,
 ) -> Result<ProviderTokenAccountsBridge, String> {
@@ -158,6 +159,7 @@ pub fn remove_token_account(
         })
         .map_err(|e| e.to_string())?;
     let active = data.clamped_active_index();
+    reload_after_token_account_change(&app, id);
     Ok(build_provider_token_accounts(
         id,
         &support,
@@ -168,7 +170,8 @@ pub fn remove_token_account(
 
 /// Set the active token account for a provider by UUID string.
 #[tauri::command]
-pub fn set_active_token_account(
+pub async fn set_active_token_account(
+    app: tauri::AppHandle,
     provider_id: String,
     account_id: String,
 ) -> Result<ProviderTokenAccountsBridge, String> {
@@ -184,10 +187,24 @@ pub fn set_active_token_account(
         })
         .map_err(|e| e.to_string())?;
     let active = data.clamped_active_index();
+    reload_after_token_account_change(&app, id);
     Ok(build_provider_token_accounts(
         id,
         &support,
         data.accounts,
         active,
     ))
+}
+
+/// The active token account changed (or was removed): drop the provider's
+/// cached reading and transient-failure grace so the panel never shows the
+/// outgoing account's usage under the new one, then refetch in the background.
+fn reload_after_token_account_change(app: &tauri::AppHandle, provider: ProviderId) {
+    super::accounts::evict_cached_reading(app, provider);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = super::do_refresh_providers(&app).await {
+            tracing::warn!(%error, "refresh after token account change failed");
+        }
+    });
 }

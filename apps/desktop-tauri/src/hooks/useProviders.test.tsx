@@ -377,6 +377,32 @@ describe("useProviders", () => {
     expect(tauriMocks.refreshProviders).toHaveBeenCalledTimes(1);
   });
 
+  it("re-arms manual refresh once the invoke settles without a refresh-complete", async () => {
+    const { result } = renderHook(() => useProviders());
+    await waitFor(() => {
+      expect(tauriMocks.refreshProvidersIfStale).toHaveBeenCalledTimes(1);
+    });
+
+    // The backend skipped this cycle (another one owned it), so no
+    // refresh-complete reaches the hook; the resolved invoke must unlatch it.
+    await act(async () => {
+      result.current.refresh();
+    });
+    await act(async () => {
+      result.current.refresh();
+    });
+
+    expect(tauriMocks.refreshProviders).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not leave an unhandled rejection when the initial cache read fails", async () => {
+    tauriMocks.getCachedProviders.mockRejectedValueOnce(new Error("ipc down"));
+    const { result } = renderHook(() => useProviders());
+
+    await waitFor(() => expect(result.current.hasLoadedCache).toBe(true));
+    expect(result.current.providers).toEqual([]);
+  });
+
   it("reports cached data when cached providers are loaded", async () => {
     tauriMocks.getCachedProviders.mockResolvedValue([
       {

@@ -426,7 +426,7 @@ pub async fn set_active_directory_account(
 
 /// Forget a provider's cached reading so the UI shows "loading" rather than the
 /// previous account's numbers while the refetch is in flight.
-fn evict_cached_reading(app: &tauri::AppHandle, provider: ProviderId) {
+pub(super) fn evict_cached_reading(app: &tauri::AppHandle, provider: ProviderId) {
     use tauri::Manager;
 
     let state = app.state::<std::sync::Mutex<crate::state::AppState>>();
@@ -436,6 +436,10 @@ fn evict_cached_reading(app: &tauri::AppHandle, provider: ProviderId) {
     guard
         .provider_cache
         .retain(|snapshot| snapshot.provider_id != provider.cli_name());
+    // The outgoing account's transient-failure grace must not carry over.
+    guard
+        .transient_provider_failure_counts
+        .retain(|(id, _), _| *id != provider);
     // The remaining entries are now a partial view, so let the next staleness
     // check re-fetch rather than treating this as a fresh full cycle.
     guard.provider_cache_updated_at = None;

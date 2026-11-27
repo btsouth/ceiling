@@ -158,6 +158,7 @@ export default function ProvidersTab({
         providerMetrics={settings.providerMetrics}
         wayfinderGatewayUrl={settings.wayfinderGatewayUrl ?? "http://127.0.0.1:8088"}
         settingsDisabled={saving}
+        hidePersonalInfo={settings.hidePersonalInfo}
         onSettingsChange={set}
       />
     </div>

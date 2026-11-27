@@ -1,10 +1,13 @@
 import type { ProviderDetail } from "../../../../types/bridge";
 import type { LocaleKey } from "../../../../i18n/keys";
 import { ProviderIcon } from "../../../../components/providers/ProviderIcon";
+import { maskIdentity } from "../../../../lib/privacy";
 
 interface Props {
   provider: ProviderDetail;
   subtitle: string;
+  /** "Hide personal info": mask addresses in the account row. */
+  hideEmail?: boolean;
   t: (key: LocaleKey) => string;
 }
 
@@ -15,9 +18,17 @@ interface Props {
  * Port of the identity portion of
  * `rust/src/native_ui/preferences.rs::render_provider_detail_panel` (~4301).
  */
-export function IdentitySection({ provider, subtitle, t }: Props) {
+export function IdentitySection({
+  provider,
+  subtitle,
+  hideEmail = false,
+  t,
+}: Props) {
   const rows: { label: string; value: string | null }[] = [
-    { label: t("Account"), value: provider.email ?? provider.organization },
+    {
+      label: t("Account"),
+      value: maskIdentity(provider.email ?? provider.organization, hideEmail),
+    },
     { label: t("Plan"), value: displayIdentityValue(provider.plan) },
     { label: t("AuthType"), value: provider.authType },
     { label: t("DataSource"), value: provider.sourceLabel },

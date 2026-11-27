@@ -282,13 +282,20 @@ fn main() {
                 let app = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     tokio::time::sleep(VISIBLE_START_ACTIVATION_DELAY).await;
-                    let request = primary_window_request();
-                    let _ = shell::reopen_to_target(
-                        &app,
-                        request.mode,
-                        request.target,
-                        request.position,
-                    );
+                    // Run the transition on the main thread: it holds
+                    // SHELL_TRANSITION_SERIAL while calling window getters, and
+                    // the main thread's Focused(false) handler takes that same
+                    // lock, so a background caller can deadlock startup.
+                    let handle = app.clone();
+                    let _ = app.run_on_main_thread(move || {
+                        let request = primary_window_request();
+                        let _ = shell::reopen_to_target(
+                            &handle,
+                            request.mode,
+                            request.target,
+                            request.position,
+                        );
+                    });
                 });
             }
 
@@ -322,7 +329,7 @@ fn main() {
                     if let Some(st) = window.app_handle().try_state::<Mutex<AppState>>()
                         && st
                             .lock()
-                            .unwrap()
+                            .unwrap_or_else(|e| e.into_inner())
                             .take_startup_tray_blur_grace(std::time::Instant::now())
                     {
                         return;
@@ -331,10 +338,13 @@ fn main() {
                     // On Windows, the tray click can cause a spurious blur before
                     // the window fully acquires focus.
                     if let Some(st) = window.app_handle().try_state::<Mutex<AppState>>()
-                        && st.lock().unwrap().was_tray_panel_recently_shown(
-                            std::time::Instant::now(),
-                            Duration::from_millis(500),
-                        )
+                        && st
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .was_tray_panel_recently_shown(
+                                std::time::Instant::now(),
+                                Duration::from_millis(500),
+                            )
                     {
                         return;
                     }
@@ -346,7 +356,7 @@ fn main() {
                     if let Some(st) = window.app_handle().try_state::<Mutex<AppState>>()
                         && st
                             .lock()
-                            .unwrap()
+                            .unwrap_or_else(|e| e.into_inner())
                             .is_gesture_blur_guard_active(std::time::Instant::now())
                     {
                         return;
@@ -364,7 +374,7 @@ fn main() {
                     // outside-click blur dismisses immediately again.
                     if let Some(st) = window.app_handle().try_state::<Mutex<AppState>>() {
                         st.lock()
-                            .unwrap()
+                            .unwrap_or_else(|e| e.into_inner())
                             .clear_gesture_guard_on_refocus(std::time::Instant::now());
                     }
                 }

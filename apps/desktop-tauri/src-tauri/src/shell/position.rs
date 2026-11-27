@@ -229,7 +229,7 @@ pub fn remember_current_geometry_if_eligible(window: &tauri::Window) {
         return;
     };
     let current_mode = {
-        let guard = st.lock().unwrap();
+        let guard = st.lock().unwrap_or_else(|e| e.into_inner());
         if guard.geometry_capture_suppressed(std::time::Instant::now()) {
             // A programmatic layout (open/transition) is still applying
             // size/position; its resize/move events must not be persisted as a

@@ -231,7 +231,7 @@ fn store_anchor(app: &AppHandle, rect: &tauri::Rect, click_position: tauri::Phys
     };
 
     if let Some(st) = app.try_state::<Mutex<AppState>>() {
-        let mut guard = st.lock().unwrap();
+        let mut guard = st.lock().unwrap_or_else(|e| e.into_inner());
         guard.tray_anchor = Some(anchor);
     }
 }
@@ -326,19 +326,36 @@ fn handle_menu_event(app: &AppHandle, id: &str) {
             });
         }
         Some(MenuAction::ToggleProvider(provider_id)) => {
-            let _ = Settings::update(|settings| {
+            let updated = Settings::update(|settings| {
                 if settings.enabled_providers.contains(&provider_id) {
                     settings.enabled_providers.remove(&provider_id);
                 } else {
                     settings.enabled_providers.insert(provider_id);
                 }
             });
+            let settings = match updated {
+                Ok(settings) => settings,
+                Err(error) => {
+                    tracing::warn!(%error, "Could not persist provider toggle from tray");
+                    return;
+                }
+            };
+            // Same fan-out as a Settings save: open surfaces re-read settings,
+            // the tray menu checkbox and icon follow, and the taskbar widget
+            // drops or gains the provider.
             crate::floatbar::notify_settings_changed(app);
-            rebuild_tray_menu(app);
+            crate::events::emit_settings_changed(app);
+            refresh_tray_presentation(app);
+            crate::taskbar_widget::apply_state(app, &settings);
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::commands::do_refresh_providers(&handle).await;
+            });
         }
         Some(MenuAction::ToggleFloatBar) => {
+            // `toggle` persists, applies the widget, notifies surfaces and
+            // rebuilds this menu, so the hotkey path stays in sync too.
             crate::floatbar::toggle(app);
-            rebuild_tray_menu(app);
         }
         Some(MenuAction::Quit) => {
             app.exit(0);
@@ -352,7 +369,7 @@ pub(crate) fn rebuild_tray_menu(app: &AppHandle) {
     let catalog = crate::commands::get_provider_catalog();
     let settings = Settings::load();
     let status_labels = if let Some(st) = app.try_state::<Mutex<AppState>>() {
-        let guard = st.lock().unwrap();
+        let guard = st.lock().unwrap_or_else(|e| e.into_inner());
         let snapshots =
             presentation_snapshots(&guard.provider_cache, settings.codex_spark_usage_visible());
         status_labels_for_settings(&settings, &snapshots, settings.ui_language)
@@ -387,7 +404,12 @@ pub fn update_tray_status_items(
 pub(crate) fn refresh_tray_presentation(app: &AppHandle) {
     let snapshots = app
         .try_state::<Mutex<AppState>>()
-        .map(|st| st.lock().unwrap().provider_cache.clone())
+        .map(|st| {
+            st.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .provider_cache
+                .clone()
+        })
         .unwrap_or_default();
     update_tray_status_items(app, &snapshots);
     update_tray_icon_and_tooltip(app, &snapshots);

@@ -32,9 +32,10 @@
 //! side of the contract, and they exist for every window because the shared
 //! browser process takes all of them down at once.
 
+use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tauri::{AppHandle, Manager, WebviewWindow};
 
@@ -115,6 +116,73 @@ impl Drop for InFlight {
     fn drop(&mut self) {
         self.0.store(false, Ordering::SeqCst);
     }
+}
+
+/// Automatic rebuilds a window may take inside [`REBUILD_BACKOFF_WINDOW`].
+const MAX_AUTOMATIC_REBUILDS: usize = 3;
+/// Rolling window for [`MAX_AUTOMATIC_REBUILDS`].
+const REBUILD_BACKOFF_WINDOW: Duration = Duration::from_secs(60);
+
+/// Caps lifecycle-driven rebuilds per window so a WebView2 runtime that
+/// crashes every fresh webview cannot spin the app in a rebuild loop.
+///
+/// Each `*_after_loss` call asks [`RebuildBackoff::admit`] first. Past the
+/// budget the window is only torn down (or, for `main`, marked dead) and is
+/// rebuilt lazily the next time the user opens it.
+pub(crate) struct RebuildBackoff {
+    losses: VecDeque<Instant>,
+}
+
+impl RebuildBackoff {
+    pub(crate) const fn new() -> Self {
+        Self {
+            losses: VecDeque::new(),
+        }
+    }
+
+    /// Record a loss at `now` and say whether an automatic rebuild is still
+    /// within budget. Losses older than the rolling window are forgotten, and
+    /// a refused loss is not recorded, so the budget frees up once the burst
+    /// of crashes ages out.
+    pub(crate) fn admit(&mut self, now: Instant) -> bool {
+        while self
+            .losses
+            .front()
+            .is_some_and(|at| now.saturating_duration_since(*at) >= REBUILD_BACKOFF_WINDOW)
+        {
+            self.losses.pop_front();
+        }
+        if self.losses.len() >= MAX_AUTOMATIC_REBUILDS {
+            return false;
+        }
+        self.losses.push_back(now);
+        true
+    }
+}
+
+static MAIN_BACKOFF: Mutex<RebuildBackoff> = Mutex::new(RebuildBackoff::new());
+static SETTINGS_BACKOFF: Mutex<RebuildBackoff> = Mutex::new(RebuildBackoff::new());
+static FLYOUT_BACKOFF: Mutex<RebuildBackoff> = Mutex::new(RebuildBackoff::new());
+static FLOATBAR_BACKOFF: Mutex<RebuildBackoff> = Mutex::new(RebuildBackoff::new());
+
+/// Set when `main` lost its webview past the rebuild budget, so the next
+/// open treats it as dead and rebuilds it then instead of right away.
+static MAIN_LAZY_REBUILD: AtomicBool = AtomicBool::new(false);
+
+fn admit_automatic_rebuild(backoff: &Mutex<RebuildBackoff>, label: &str) -> bool {
+    let admitted = backoff
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .admit(Instant::now());
+    if !admitted {
+        tracing::warn!(
+            label,
+            max = MAX_AUTOMATIC_REBUILDS,
+            window_secs = REBUILD_BACKOFF_WINDOW.as_secs(),
+            "window_recovery: webview keeps failing; deferring the rebuild to the next open"
+        );
+    }
+    admitted
 }
 
 fn main_rebuild() -> std::sync::MutexGuard<'static, MainRebuild> {
@@ -239,6 +307,10 @@ fn main_webview_is_alive() -> bool {
 /// hidden, exactly as at startup. When it was on screen, replay the current
 /// surface at `position` so it comes back where the user had it.
 pub(crate) fn recover_main_after_loss(app: &AppHandle, replay: bool, position: Option<(i32, i32)>) {
+    if !admit_automatic_rebuild(&MAIN_BACKOFF, MAIN_LABEL) {
+        MAIN_LAZY_REBUILD.store(true, Ordering::SeqCst);
+        return;
+    }
     let request = replay
         .then(|| {
             let state = app.try_state::<Mutex<crate::state::AppState>>()?;
@@ -272,7 +344,8 @@ pub(crate) fn resolve_live_main(
     request: Option<MainRequest>,
 ) -> Option<WebviewWindow> {
     let window = app.get_webview_window(MAIN_LABEL);
-    let alive = window.is_some() && main_webview_is_alive();
+    let alive =
+        window.is_some() && !MAIN_LAZY_REBUILD.load(Ordering::SeqCst) && main_webview_is_alive();
     let in_flight = main_rebuild().in_flight;
 
     match guard_action(window.is_some(), alive, in_flight) {
@@ -305,6 +378,8 @@ fn dispatch_main_rebuild(app: &AppHandle, request: Option<MainRequest>) {
     if !main_rebuild().enqueue(request) {
         return;
     }
+    // This rebuild serves any deferred one, too.
+    MAIN_LAZY_REBUILD.store(false, Ordering::SeqCst);
 
     let app = app.clone();
     let _ = std::thread::spawn(move || {
@@ -419,6 +494,9 @@ pub(crate) fn recover_settings_after_loss(app: &AppHandle, reopen: bool) {
     let Some(ticket) = InFlight::claim(&SETTINGS_REBUILD_IN_FLIGHT) else {
         return;
     };
+    // Past the budget, only tear down; `open_or_focus` rebuilds on next open.
+    let reopen = reopen
+        && admit_automatic_rebuild(&SETTINGS_BACKOFF, super::settings_window::SETTINGS_LABEL);
     let tab = reopen.then(
         || match SurfaceTarget::default_for_mode(SurfaceMode::Settings) {
             SurfaceTarget::Settings { tab } => tab,
@@ -500,6 +578,9 @@ pub(crate) fn recover_flyout_after_loss(app: &AppHandle, reopen: bool) {
     let Some(ticket) = InFlight::claim(&FLYOUT_REBUILD_IN_FLIGHT) else {
         return;
     };
+    // Past the budget, only tear down; `open_or_focus` rebuilds on next open.
+    let reopen =
+        reopen && admit_automatic_rebuild(&FLYOUT_BACKOFF, super::flyout_window::FLYOUT_LABEL);
     let app = app.clone();
     let _ = std::thread::spawn(move || {
         let destroyed = match app.get_webview_window(super::flyout_window::FLYOUT_LABEL) {
@@ -545,6 +626,9 @@ pub(crate) fn recover_floatbar_after_loss(app: &AppHandle) {
     let Some(ticket) = InFlight::claim(&FLOATBAR_REBUILD_IN_FLIGHT) else {
         return;
     };
+    // Past the budget, only tear down; the next enable or settings save
+    // rebuilds the bar through `apply_state`.
+    let rebuild = admit_automatic_rebuild(&FLOATBAR_BACKOFF, crate::floatbar::FLOATBAR_LABEL);
     let app = app.clone();
     let _ = std::thread::spawn(move || {
         let _ticket = ticket;
@@ -557,6 +641,9 @@ pub(crate) fn recover_floatbar_after_loss(app: &AppHandle) {
                 %error,
                 "window_recovery: could not release the float bar window for rebuild"
             );
+            return;
+        }
+        if !rebuild {
             return;
         }
         let settings = codexbar::settings::Settings::load();
@@ -577,6 +664,36 @@ pub(crate) fn recover_floatbar_after_loss(app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backoff_allows_three_rebuilds_then_defers() {
+        let mut backoff = RebuildBackoff::new();
+        let start = Instant::now();
+        assert!(backoff.admit(start));
+        assert!(backoff.admit(start + Duration::from_secs(1)));
+        assert!(backoff.admit(start + Duration::from_secs(2)));
+        assert!(!backoff.admit(start + Duration::from_secs(3)));
+        assert!(!backoff.admit(start + Duration::from_secs(59)));
+    }
+
+    #[test]
+    fn backoff_budget_frees_up_as_losses_age_out_of_the_window() {
+        let mut backoff = RebuildBackoff::new();
+        let start = Instant::now();
+        for offset in 0..3 {
+            assert!(backoff.admit(start + Duration::from_secs(offset)));
+        }
+        assert!(!backoff.admit(start + Duration::from_secs(30)));
+        // The first loss is now 60s old and drops out; one slot is free.
+        assert!(backoff.admit(start + Duration::from_secs(60)));
+        assert!(!backoff.admit(start + Duration::from_secs(60)));
+        // Long after the burst, the full budget is back.
+        let later = start + Duration::from_secs(200);
+        assert!(backoff.admit(later));
+        assert!(backoff.admit(later));
+        assert!(backoff.admit(later));
+        assert!(!backoff.admit(later));
+    }
 
     #[test]
     fn a_live_window_is_shown_as_is() {

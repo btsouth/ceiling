@@ -104,7 +104,7 @@ export function QuickActionsSection({
         >
           {t("ActionRefresh")}
         </button>
-        {provider.dashboardUrl && (
+        {provider.supportsLogin && (
           <button
             type="button"
             className="btn btn--ghost"

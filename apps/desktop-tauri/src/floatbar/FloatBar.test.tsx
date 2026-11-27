@@ -645,7 +645,7 @@ describe("FloatBar", () => {
       {
         ...snapshot("antigravity", "Antigravity", 0, {
           error:
-            "Provider not installed: Antigravity language server not running.",
+            "Provider not installed: Antigravity CLI (`agy`) is not installed. Install Antigravity CLI 1.2.13 or later, sign in, then retry.",
         }),
         primaryLabel: "Claude",
       },

@@ -43,6 +43,7 @@ function provider(): ProviderDetail {
     dashboardUrl: null,
     statusPageUrl: null,
     buyCreditsUrl: null,
+    supportsLogin: false,
     hasSnapshot: false,
     cookieSource: null,
     region: null,
@@ -57,6 +58,47 @@ describe("QuickActionsSection", () => {
     tauriMocks.getLocaleStrings.mockResolvedValue(buildBundle());
     tauriMocks.openExternalUrl.mockResolvedValue(undefined);
     eventMocks.listen.mockResolvedValue(() => {});
+  });
+
+  function renderActions(detail: ProviderDetail) {
+    return render(
+      <QuickActionsSection
+        provider={detail}
+        busy={false}
+        loginPhase={null}
+        loginCode={null}
+        loginUrl={null}
+        onRefresh={noop}
+        onSwitchAccount={noop}
+        onOpenDashboard={noop}
+        onOpenStatusPage={noop}
+        onCopyError={noop}
+        onBuyCredits={noop}
+        t={(key) => key}
+      />,
+    );
+  }
+
+  it("offers Switch account for providers with in-app login, even without a dashboard", () => {
+    renderActions({ ...provider(), supportsLogin: true, dashboardUrl: null });
+    expect(
+      screen.getByRole("button", { name: "ActionSwitchAccount" }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides Switch account for dashboard-only providers that cannot sign in from the app", () => {
+    renderActions({
+      ...provider(),
+      id: "cursor",
+      supportsLogin: false,
+      dashboardUrl: "https://cursor.com/dashboard",
+    });
+    expect(
+      screen.queryByRole("button", { name: "ActionSwitchAccount" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "ActionUsageDashboard" }),
+    ).toBeInTheDocument();
   });
 
   it("shows the device-flow code and verification link alongside the login status", async () => {

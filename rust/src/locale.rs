@@ -925,6 +925,23 @@ locale_keys! {
     TrayResetsInLabel,
     TrayResetsDueNow,
 
+    // Taskbar flyout
+    TaskbarFlyoutNoReset,
+    TaskbarFlyoutResetNow,
+    TaskbarFlyoutUnavailable,
+    TaskbarFlyoutOnStrip,
+    TaskbarFlyoutLastSyncFailed,
+    TaskbarFlyoutResetReady,
+    TaskbarFlyoutResetsReady,
+    TaskbarFlyoutSpendOf,
+    TaskbarFlyoutMoreLimits,
+    TaskbarFlyoutNextResetIn,
+    TaskbarFlyoutUsageAtAGlance,
+    TaskbarFlyoutSyncing,
+    TaskbarFlyoutMoreProviders,
+    TaskbarFlyoutOpenCeiling,
+    TaskbarFlyoutAriaLabel,
+
     // Provider data-source / privacy explainer (SOU-179)
     DataSourceSectionTitle,
     DataSourcePrivacyNote,
@@ -936,6 +953,7 @@ locale_keys! {
     DataSourceGemini,
     DataSourceGrok,
     DataSourceDeepSeekHarness,
+    DataSourceAntigravity,
     DshUsageLabel,
     DshUsageLoading,
     DshNotReported,

@@ -19,6 +19,7 @@ const PROVENANCE_KEYS: Record<string, LocaleKey> = {
   gemini: "DataSourceGemini",
   grok: "DataSourceGrok",
   deepseekharness: "DataSourceDeepSeekHarness",
+  antigravity: "DataSourceAntigravity",
 };
 
 /** Provider ids that ship dedicated (non-generic) provenance copy. */
