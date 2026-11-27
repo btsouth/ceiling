@@ -169,6 +169,20 @@ static FLOATBAR_BACKOFF: Mutex<RebuildBackoff> = Mutex::new(RebuildBackoff::new(
 /// open treats it as dead and rebuilds it then instead of right away.
 static MAIN_LAZY_REBUILD: AtomicBool = AtomicBool::new(false);
 
+/// Set when the float bar lost its webview past the rebuild budget, so the
+/// z-order watchdog does not keep recreating it every 5 seconds until an
+/// explicit enable, toggle, or settings save clears the suspension.
+static FLOATBAR_LAZY_REBUILD: AtomicBool = AtomicBool::new(false);
+
+#[cfg(windows)]
+pub(crate) fn floatbar_watchdog_suspended() -> bool {
+    FLOATBAR_LAZY_REBUILD.load(Ordering::SeqCst)
+}
+
+pub(crate) fn clear_floatbar_lazy_rebuild() {
+    FLOATBAR_LAZY_REBUILD.store(false, Ordering::SeqCst);
+}
+
 fn admit_automatic_rebuild(backoff: &Mutex<RebuildBackoff>, label: &str) -> bool {
     let admitted = backoff
         .lock()
@@ -424,8 +438,14 @@ fn dispatch_main_rebuild(app: &AppHandle, request: Option<MainRequest>) {
 /// The window is healthy by now, so this pass takes the normal path —
 /// `resolve_live_main` returns it and no further rebuild is dispatched.
 fn replay_on_main_thread(app: &AppHandle, request: MainRequest) {
+    if MAIN_LAZY_REBUILD.load(Ordering::SeqCst) {
+        return;
+    }
     let handle = app.clone();
     let dispatched = app.run_on_main_thread(move || {
+        if MAIN_LAZY_REBUILD.load(Ordering::SeqCst) {
+            return;
+        }
         if let Err(error) =
             super::transition_to_target(&handle, request.mode, request.target, request.position)
         {
@@ -629,6 +649,9 @@ pub(crate) fn recover_floatbar_after_loss(app: &AppHandle) {
     // Past the budget, only tear down; the next enable or settings save
     // rebuilds the bar through `apply_state`.
     let rebuild = admit_automatic_rebuild(&FLOATBAR_BACKOFF, crate::floatbar::FLOATBAR_LABEL);
+    if !rebuild {
+        FLOATBAR_LAZY_REBUILD.store(true, Ordering::SeqCst);
+    }
     let app = app.clone();
     let _ = std::thread::spawn(move || {
         let _ticket = ticket;

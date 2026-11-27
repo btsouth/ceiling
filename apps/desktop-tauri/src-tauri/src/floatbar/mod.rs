@@ -62,6 +62,7 @@ pub fn toggle(app: &tauri::AppHandle) {
         Ok(settings) => settings,
         Err(error) => {
             tracing::warn!(%error, "Could not persist taskbar widget visibility");
+            crate::tray_bridge::rebuild_tray_menu(app);
             return;
         }
     };
@@ -77,6 +78,7 @@ pub fn toggle(app: &tauri::AppHandle) {
 /// close, or re-apply opacity / click-through as appropriate. Used after
 /// a settings patch is saved.
 pub fn apply_state(app: &tauri::AppHandle, settings: &Settings) -> Result<(), String> {
+    crate::shell::window_recovery::clear_floatbar_lazy_rebuild();
     let window = app.get_webview_window(FLOATBAR_LABEL);
     let visible = window
         .as_ref()

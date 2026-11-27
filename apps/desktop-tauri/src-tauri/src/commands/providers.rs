@@ -152,6 +152,8 @@ type ProviderCacheKey = (String, Option<String>);
 /// Configured directories each produce one reading stamped with their id.
 pub(crate) fn expected_cache_keys(
     enabled_ids: &[ProviderId],
+    settings: &Settings,
+    api_keys: &ApiKeys,
     account_dirs: &ConfiguredAccounts,
     token_accounts: &HashMap<ProviderId, ProviderAccountData>,
 ) -> HashSet<ProviderCacheKey> {
@@ -161,7 +163,7 @@ pub(crate) fn expected_cache_keys(
         if targets.is_empty() {
             keys.insert((
                 id.cli_name().to_string(),
-                active_token_account_id(*id, token_accounts),
+                active_token_account_id(*id, settings, api_keys, token_accounts),
             ));
         } else {
             for target in targets {
@@ -231,6 +233,8 @@ async fn do_refresh_providers_with_policy(
     // directory — two identical cards for one account (issue #155).
     let expected = expected_cache_keys(
         &inputs.enabled_ids,
+        &inputs.settings,
+        &inputs.api_keys,
         &inputs.account_dirs,
         &inputs.token_accounts,
     );
@@ -342,7 +346,12 @@ fn spawn_provider_refreshes(
             id,
             base_ctx,
             &inputs.account_dirs,
-            active_token_account_id(id, &inputs.token_accounts),
+            active_token_account_id(
+                id,
+                &inputs.settings,
+                &inputs.api_keys,
+                &inputs.token_accounts,
+            ),
         );
 
         for (ctx, account) in fetches {
@@ -362,18 +371,29 @@ fn spawn_provider_refreshes(
 
 /// The active token account's id for a provider, as a cache/history scope.
 ///
-/// Token accounts are provider-global, so with no directory accounts the one
-/// reading is stamped with this id. That keeps capacity events, usage history
-/// and quota runs for different token accounts apart instead of all sharing
-/// `account_id = None`.
+/// Only stamps the token account's id when that account's credentials actually
+/// participate in `build_fetch_context` (env/API key override not shadowed by
+/// a stored API key, or cookie override when cookie mode is enabled). When a
+/// provider has a saved token account that is ignored (for example Claude with
+/// `cookie_source = "off"` reading the ambient CLI OAuth seat), the reading
+/// stays ambient (`None`) so it is never mislabeled as the token account.
 pub(crate) fn active_token_account_id(
     id: ProviderId,
+    settings: &Settings,
+    api_keys: &ApiKeys,
     token_accounts: &HashMap<ProviderId, ProviderAccountData>,
 ) -> Option<String> {
-    token_accounts
+    let account = token_accounts
         .get(&id)
-        .and_then(ProviderAccountData::active_account)
-        .map(|account| account.id.to_string())
+        .and_then(ProviderAccountData::active_account)?;
+    let override_data = TokenAccountOverride::from_account(id, account.clone());
+    let has_stored_api_key = api_keys.get(id.cli_name()).is_some();
+    let uses_env = override_data.env_override.is_some() && !has_stored_api_key;
+    let cookie_source = settings.cookie_source(id);
+    let uses_cookie = id.cookie_domain().is_some()
+        && override_data.cookie_header.is_some()
+        && matches!(cookie_source, "manual" | "auto" | "browser" | "web");
+    (uses_env || uses_cookie).then(|| account.id.to_string())
 }
 
 /// One fetch context per configured account, or a single fetch for the

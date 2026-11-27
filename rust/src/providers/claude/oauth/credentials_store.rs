@@ -427,8 +427,9 @@ pub(super) fn can_persist_refreshed_for_source(source: &CredentialSource) -> boo
     }
 }
 
-/// The credentials file still exists as a regular file (through any link)
-/// and this process can open it for writing.
+/// The credentials file still exists as a regular file (through any link),
+/// this process can open it for writing, and its parent directory accepts new
+/// files (needed for the lock file and atomic temp-file replace).
 fn credentials_file_is_writable(path: &Path) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;
@@ -436,9 +437,42 @@ fn credentials_file_is_writable(path: &Path) -> bool {
     if !metadata.is_file() || metadata.permissions().readonly() {
         return false;
     }
-    // Opening for write without truncation changes nothing on disk; it only
-    // proves the account and ACL allow the later atomic replace.
-    std::fs::OpenOptions::new().write(true).open(path).is_ok()
+    // Opening for write without truncation changes nothing on disk; it proves
+    // file-level write access for the existing credentials file.
+    if std::fs::OpenOptions::new().write(true).open(path).is_err() {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    dir_accepts_new_files(parent)
+}
+
+/// Probe whether `dir` lets this process create and remove a file, without
+/// leaving anything behind.
+fn dir_accepts_new_files(dir: &Path) -> bool {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    for attempt in 0..4u32 {
+        let probe = dir.join(format!(".ceiling-write-probe-{pid}-{nonce}-{attempt}"));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
+            Ok(file) => {
+                drop(file);
+                let _ = std::fs::remove_file(&probe);
+                return true;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return false,
+        }
+    }
+    false
 }
 
 pub(super) fn persist_refreshed_for_source(

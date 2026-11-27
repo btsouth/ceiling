@@ -155,8 +155,8 @@ impl CopilotApi {
             return Ok(token);
         }
 
-        for target in CREDENTIAL_TARGETS {
-            if let Some(token) = self.try_load_credential(target)
+        for target in credential_targets_for_host(&host) {
+            if let Some(token) = self.try_load_credential(&target)
                 && let Some(actual_token) = normalize_token(Some(&token))
             {
                 tracing::debug!("Found Copilot token in credential target: {}", target);
@@ -548,6 +548,22 @@ fn invalid_github_host() -> ProviderError {
 /// The token is sent to whatever this resolves to, so anything beyond a plain
 /// DNS name is rejected: userinfo (`ghe.example.com@evil.test`), ports, paths,
 /// queries, fragments, IP literals and non-HTTP(S) schemes.
+/// Credential Manager targets scoped to `host`.
+///
+/// Non-default enterprise hosts never fall back to `github.com` targets or the
+/// default `codexbar-copilot` entry, so a github.com token cannot be sent to
+/// an enterprise API host if `gh auth token --hostname <host>` fails or times out.
+fn credential_targets_for_host(host: &str) -> Vec<String> {
+    if host.eq_ignore_ascii_case(DEFAULT_GITHUB_HOST) {
+        CREDENTIAL_TARGETS
+            .iter()
+            .map(|target| (*target).to_string())
+            .collect()
+    } else {
+        vec![format!("git:https://{host}"), host.to_string()]
+    }
+}
+
 fn validated_github_host(github_host: Option<&str>) -> Result<String, ProviderError> {
     let raw = github_host
         .map(str::trim)
@@ -1034,6 +1050,28 @@ mod tests {
             "https://api.ghe.example.com/copilot_internal/user"
         );
         assert!(github_api_url(Some("ghe.example.com@evil.test"), GITHUB_USER_PATH).is_err());
+    }
+
+    #[test]
+    fn enterprise_hosts_never_fall_back_to_github_com_credentials() {
+        let default_targets = credential_targets_for_host("github.com");
+        assert!(default_targets.iter().any(|t| t == "codexbar-copilot"));
+        assert!(
+            default_targets
+                .iter()
+                .any(|t| t == "git:https://github.com")
+        );
+
+        let enterprise_targets = credential_targets_for_host("ghe.example.com");
+        assert_eq!(
+            enterprise_targets,
+            vec![
+                "git:https://ghe.example.com".to_string(),
+                "ghe.example.com".to_string(),
+            ]
+        );
+        assert!(!enterprise_targets.iter().any(|t| t.contains("github.com")));
+        assert!(!enterprise_targets.iter().any(|t| t == "codexbar-copilot"));
     }
 
     #[tokio::test]

@@ -259,7 +259,7 @@ pub fn hide(app: &AppHandle) -> Result<(), String> {
             .ok_or_else(|| "app state unavailable".to_string())?;
         state
             .lock()
-            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|e| e.into_inner())
             .clear_flyout_reveal();
         window.hide().map_err(|e| e.to_string())?;
     }

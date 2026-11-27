@@ -1155,7 +1155,13 @@ fn pruning_drops_disabled_providers() {
 #[test]
 fn expected_keys_are_ambient_when_nothing_is_configured() {
     let accounts = ConfiguredAccounts::default();
-    let keys = super::expected_cache_keys(&[ProviderId::Codex], &accounts, &HashMap::new());
+    let keys = super::expected_cache_keys(
+        &[ProviderId::Codex],
+        &Settings::default(),
+        &ApiKeys::default(),
+        &accounts,
+        &HashMap::new(),
+    );
 
     assert_eq!(keys.len(), 1);
     assert!(keys.contains(&("codex".to_string(), None)));
@@ -1181,7 +1187,13 @@ fn expected_keys_list_every_configured_directory_account() {
             std::path::PathBuf::from("/homes/work"),
         ));
 
-    let keys = super::expected_cache_keys(&[ProviderId::Codex], &accounts, &HashMap::new());
+    let keys = super::expected_cache_keys(
+        &[ProviderId::Codex],
+        &Settings::default(),
+        &ApiKeys::default(),
+        &accounts,
+        &HashMap::new(),
+    );
     let targets = accounts.targets_for(ProviderId::Codex);
 
     assert_eq!(keys.len(), 2);
@@ -1834,7 +1846,10 @@ fn token_store_with(
 #[test]
 fn token_account_reading_is_stamped_with_the_active_token_id() {
     let (store, ids) = token_store_with(ProviderId::Claude, &["personal", "work"], 1);
-    let token_id = super::active_token_account_id(ProviderId::Claude, &store);
+    let mut settings = Settings::default();
+    settings.set_cookie_source(ProviderId::Claude, "manual");
+    let api_keys = ApiKeys::default();
+    let token_id = super::active_token_account_id(ProviderId::Claude, &settings, &api_keys, &store);
     assert_eq!(token_id.as_deref(), Some(ids[1].as_str()));
 
     let fetches = super::account_fetches(
@@ -1845,13 +1860,26 @@ fn token_account_reading_is_stamped_with_the_active_token_id() {
     );
     assert_eq!(fetches.len(), 1);
     assert_eq!(fetches[0].1.id.as_deref(), Some(ids[1].as_str()));
+
+    // When cookie_source is "off", Claude reads the ambient CLI OAuth seat rather
+    // than the session-key token account, so the reading must stay ambient.
+    settings.set_cookie_source(ProviderId::Claude, "off");
+    assert_eq!(
+        super::active_token_account_id(ProviderId::Claude, &settings, &api_keys, &store),
+        None
+    );
 }
 
 #[test]
 fn expected_keys_follow_the_active_token_account() {
     let (store, ids) = token_store_with(ProviderId::Claude, &["personal", "work"], 0);
+    let mut settings = Settings::default();
+    settings.set_cookie_source(ProviderId::Claude, "manual");
+    let api_keys = ApiKeys::default();
     let keys = super::expected_cache_keys(
         &[ProviderId::Claude, ProviderId::Codex],
+        &settings,
+        &api_keys,
         &ConfiguredAccounts::default(),
         &store,
     );
@@ -1866,6 +1894,8 @@ fn expected_keys_follow_the_active_token_account() {
 #[test]
 fn directory_accounts_take_precedence_over_token_account_scope() {
     let (store, ids) = token_store_with(ProviderId::Codex, &["token"], 0);
+    let settings = Settings::default();
+    let api_keys = ApiKeys::default();
     let mut accounts = ConfiguredAccounts::default();
     accounts
         .codex
@@ -1876,7 +1906,13 @@ fn directory_accounts_take_precedence_over_token_account_scope() {
             std::path::PathBuf::from("/homes/personal"),
         ));
 
-    let keys = super::expected_cache_keys(&[ProviderId::Codex], &accounts, &store);
+    let keys = super::expected_cache_keys(
+        &[ProviderId::Codex],
+        &settings,
+        &api_keys,
+        &accounts,
+        &store,
+    );
     assert_eq!(keys.len(), 1);
     assert!(!keys.contains(&("codex".to_string(), Some(ids[0].clone()))));
 

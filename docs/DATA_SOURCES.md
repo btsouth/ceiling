@@ -61,9 +61,10 @@ and the `gemini` provider ID remains available for Gemini Code Assist.
 - Two other non-provider hosts are contacted regardless of that switch:
   models.dev (public model prices, 24-hour TTL) and GitHub
   (`api.github.com`) for the update check on the selected channel.
-- Local session activity detection on Windows looks at the names and PIDs of
-  running processes on this PC. It does not read command lines, and none of
-  it is sent over the network.
+- Local session activity detection on Windows inspects the names, PIDs,
+  executable paths, and creation times of running processes on this PC via
+  `Win32_Process` (restricted to those properties; command lines are not
+  requested). None of it is sent over the network.
 
 If you enable a provider and don't see it described here or in the in-app panel,
 that's a bug. Please open an issue.

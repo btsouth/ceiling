@@ -5,6 +5,28 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// True while `apply_ready_installer` is hashing or launching a staged installer
+/// so a concurrent update check cannot delete the file out from under it.
+static APPLY_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+struct ApplyInFlightGuard;
+
+impl ApplyInFlightGuard {
+    fn try_acquire() -> Option<Self> {
+        APPLY_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for ApplyInFlightGuard {
+    fn drop(&mut self) {
+        APPLY_IN_FLIGHT.store(false, Ordering::Release);
+    }
+}
 
 use tauri::Manager;
 
@@ -30,7 +52,8 @@ pub async fn check_for_updates(
     // silent no-op; a "still latest" result restores Ready and the installer.
     {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
-        if should_skip_update_check(&guard.update_state) {
+        if APPLY_IN_FLIGHT.load(Ordering::Acquire) || should_skip_update_check(&guard.update_state)
+        {
             return Ok(guard.update_payload());
         }
         let staged = matches!(guard.update_state, UpdateState::Ready)
@@ -140,7 +163,7 @@ fn commit_check_result(
     guard.update_info = applied.info;
     // Ready -> Available (a newer release superseded the staged one): the old
     // installer will never be applied, so do not leave it in the staging dir.
-    if guard.installer_path != applied.installer_path {
+    if guard.installer_path != applied.installer_path && !APPLY_IN_FLIGHT.load(Ordering::Acquire) {
         discard_staged_installer(guard.installer_path.take());
     }
     guard.installer_path = applied.installer_path;
@@ -374,6 +397,9 @@ pub(crate) fn apply_ready_update(
 }
 
 fn apply_ready_installer(state: &Mutex<AppState>) -> Result<(), String> {
+    let Some(_apply_guard) = ApplyInFlightGuard::try_acquire() else {
+        return Err("An update installation is already in progress".to_string());
+    };
     let result = (|| {
         let (path, expected_sha256) = {
             let guard = state.lock().map_err(|e| e.to_string())?;

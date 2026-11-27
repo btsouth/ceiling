@@ -286,7 +286,22 @@ fn installer_version_from_name(name: &str) -> Option<(u32, u32, u32)> {
     let stem = lower
         .strip_suffix("-setup.exe")
         .or_else(|| lower.strip_suffix(".msi"))?;
+    parse_installer_stem_version(stem)
+}
 
+/// Like [`installer_version_from_name`], but also recognizes cached Microsoft
+/// Store bundles (`*-Store-Setup.exe`) so [`prune_superseded_downloads`] can
+/// reclaim superseded 300+ MiB bundles without ever selecting them to apply.
+fn prunable_installer_version_from_name(name: &str) -> Option<(u32, u32, u32)> {
+    if let Some(version) = installer_version_from_name(name) {
+        return Some(version);
+    }
+    let lower = name.to_ascii_lowercase();
+    let stem = lower.strip_suffix("-store-setup.exe")?;
+    parse_installer_stem_version(stem)
+}
+
+fn parse_installer_stem_version(stem: &str) -> Option<(u32, u32, u32)> {
     let version_candidate = stem.split_once('-').map(|(_, rest)| rest).unwrap_or(stem);
     let version_text: String = version_candidate
         .chars()
@@ -944,7 +959,7 @@ pub fn prune_superseded_downloads() {
         let Some(version) = path
             .file_name()
             .and_then(|name| name.to_str())
-            .and_then(installer_version_from_name)
+            .and_then(prunable_installer_version_from_name)
         else {
             continue;
         };
@@ -1051,6 +1066,22 @@ mod tests {
         assert!(
             far_future > current,
             "a genuinely newer installer must survive pruning"
+        );
+
+        // Superseded Store bundles are never selectable as pending updates,
+        // but pruning still recognizes their version so old 300+ MiB bundles
+        // can be reclaimed.
+        assert_eq!(
+            installer_version_from_name("Ceiling-1.5.50-Store-Setup.exe"),
+            None
+        );
+        assert_eq!(
+            prunable_installer_version_from_name("Ceiling-1.5.50-Store-Setup.exe"),
+            Some((1, 5, 50))
+        );
+        assert_eq!(
+            prunable_installer_version_from_name("Ceiling-99.0.0-Store-Setup.exe"),
+            Some((99, 0, 0))
         );
     }
 

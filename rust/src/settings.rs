@@ -1225,8 +1225,10 @@ impl Settings {
         path: &std::path::Path,
         rename: RenameFn,
     ) -> anyhow::Result<()> {
-        if std::fs::symlink_metadata(path).is_err() {
-            return Ok(());
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
         }
         let (_, state) = Self::read_path_with(path, true, rename);
         if state == ReadState::QuarantineFailed {
