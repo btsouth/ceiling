@@ -148,6 +148,8 @@ pub struct AppState {
     pub last_update_check_ms: Option<i64>,
     /// Path to a downloaded installer ready to apply.
     pub installer_path: Option<PathBuf>,
+    /// True while `apply_ready_installer` is hashing or launching the staged installer.
+    pub update_apply_in_flight: bool,
     /// Proof-harness configuration (set when `CODEXBAR_PROOF_MODE` is active).
     pub proof_config: Option<ProofConfig>,
     /// Persistent notification manager — tracks which alerts have fired to prevent spam.
@@ -222,6 +224,7 @@ impl AppState {
             update_info: None,
             last_update_check_ms: None,
             installer_path: None,
+            update_apply_in_flight: false,
             proof_config: None,
             notification_manager: codexbar::notifications::NotificationManager::new(),
             capacity_event_observer: crate::capacity_events::CapacityEventObserver::load_default(),
