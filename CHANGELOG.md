@@ -1,6 +1,6 @@
 # Changelog
 
-## [Ceiling] 1.5.52 - 2026-11-27
+## [Ceiling] 1.5.53 - 2026-11-27
 
 Antigravity now uses Google's official read-only `agy` CLI exclusively, Gemini Code Assist and Claude Code session handling are safer, and desktop startup, token accounts, updater selection, and Settings error handling are hardened.
 
