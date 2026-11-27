@@ -393,7 +393,9 @@ pub fn install_z_order_guard(app: tauri::AppHandle) {
                     ticks = ticks.wrapping_add(1);
                     if recover_window {
                         let settings = codexbar::settings::Settings::load();
-                        if settings.float_bar_enabled {
+                        if settings.float_bar_enabled
+                            && !crate::shell::window_recovery::floatbar_watchdog_suspended()
+                        {
                             if let Err(error) = super::apply_state(&app, &settings) {
                                 tracing::warn!(%error, "Could not recover floating bar window");
                             }

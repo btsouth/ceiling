@@ -8,11 +8,24 @@ import {
 describe("providerProvenance", () => {
   it("gives the five first-class providers dedicated (non-generic) copy", () => {
     expect([...DETAILED_PROVENANCE_PROVIDERS].sort()).toEqual(
-      ["claude", "codex", "copilot", "cursor", "deepseekharness", "gemini", "grok"].sort(),
+      [
+        "antigravity",
+        "claude",
+        "codex",
+        "copilot",
+        "cursor",
+        "deepseekharness",
+        "gemini",
+        "grok",
+      ].sort(),
     );
     for (const id of DETAILED_PROVENANCE_PROVIDERS) {
       expect(providerProvenanceKey(id)).not.toBe("DataSourceGeneric");
     }
+  });
+
+  it("describes Antigravity as the official agy CLI, not the generic line", () => {
+    expect(providerProvenanceKey("antigravity")).toBe("DataSourceAntigravity");
   });
 
   it("falls back to the generic line for providers without dedicated copy", () => {

@@ -17,6 +17,18 @@ const CLAUDE_LOGIN_ARGS: &[&str] = &["auth", "login"];
 const CODEX_LOGIN_ARGS: &[&str] = &["login", "--device-auth"];
 const COPILOT_LOGIN_ARGS: &[&str] = &["auth", "login", "-w"];
 
+/// Hosts each CLI is expected to print for sign-in. Ceiling only opens or
+/// reports an HTTPS URL on one of these exact hosts, so CLI output (or
+/// anything a compromised shim prints) cannot steer the browser elsewhere.
+const CLAUDE_AUTH_HOSTS: &[&str] = &[
+    "claude.ai",
+    "claude.com",
+    "platform.claude.com",
+    "console.anthropic.com",
+];
+const CODEX_AUTH_HOSTS: &[&str] = &["auth.openai.com"];
+const COPILOT_AUTH_HOSTS: &[&str] = &["github.com"];
+
 /// Result of a login attempt
 #[derive(Debug, Clone)]
 pub struct LoginResult {
@@ -62,6 +74,7 @@ struct CliLoginSpec {
     args: &'static [&'static str],
     success_markers: &'static [&'static str],
     browser_mode: BrowserOpenMode,
+    auth_hosts: &'static [&'static str],
 }
 
 const COMMON_SUCCESS_MARKERS: &[&str] = &[
@@ -80,6 +93,7 @@ fn claude_login_spec() -> CliLoginSpec {
         args: CLAUDE_LOGIN_ARGS,
         success_markers: COMMON_SUCCESS_MARKERS,
         browser_mode: BrowserOpenMode::CliManaged,
+        auth_hosts: CLAUDE_AUTH_HOSTS,
     }
 }
 
@@ -90,6 +104,7 @@ fn codex_login_spec() -> CliLoginSpec {
         args: CODEX_LOGIN_ARGS,
         success_markers: COMMON_SUCCESS_MARKERS,
         browser_mode: BrowserOpenMode::OpenPrintedUrl,
+        auth_hosts: CODEX_AUTH_HOSTS,
     }
 }
 
@@ -100,6 +115,7 @@ fn copilot_login_spec() -> CliLoginSpec {
         args: COPILOT_LOGIN_ARGS,
         success_markers: &["Logged in as", "Authentication complete"],
         browser_mode: BrowserOpenMode::OpenPrintedUrl,
+        auth_hosts: COPILOT_AUTH_HOSTS,
     }
 }
 
@@ -153,6 +169,7 @@ where
         &on_phase,
         spec.success_markers,
         spec.browser_mode,
+        spec.auth_hosts,
         &open_url,
     );
 
@@ -197,6 +214,7 @@ where
     on_phase: &'a F,
     success_markers: &'a [&'a str],
     browser_mode: BrowserOpenMode,
+    auth_hosts: &'a [&'a str],
     open_url: &'a dyn Fn(&str),
     waiting_browser_emitted: bool,
     start: Instant,
@@ -212,6 +230,7 @@ where
         on_phase: &'a F,
         success_markers: &'a [&'a str],
         browser_mode: BrowserOpenMode,
+        auth_hosts: &'a [&'a str],
         open_url: &'a dyn Fn(&str),
     ) -> Self {
         Self {
@@ -221,6 +240,7 @@ where
             on_phase,
             success_markers,
             browser_mode,
+            auth_hosts,
             open_url,
             waiting_browser_emitted: false,
             start: Instant::now(),
@@ -264,6 +284,10 @@ where
         };
 
         let url = m.as_str().to_string();
+        if !is_allowed_auth_url(&url, self.auth_hosts) {
+            tracing::debug!("Ignoring login URL outside the expected sign-in hosts");
+            return;
+        }
         self.emit_waiting_browser();
         if self.browser_mode == BrowserOpenMode::OpenPrintedUrl {
             (self.open_url)(&url);
@@ -372,8 +396,35 @@ where
     state.into_result(outcome)
 }
 
-/// Open a URL in the default browser
+/// Whether `url` is HTTPS on exactly one of `allowed_hosts`, with no
+/// userinfo or explicit port.
+fn is_allowed_auth_url(url: &str, allowed_hosts: &[&str]) -> bool {
+    let Ok(parsed) = url::Url::parse(url) else {
+        return false;
+    };
+    let Some(url::Host::Domain(host)) = parsed.host() else {
+        return false;
+    };
+    parsed.scheme() == "https"
+        && parsed.username().is_empty()
+        && parsed.password().is_none()
+        && parsed.port().is_none()
+        && allowed_hosts
+            .iter()
+            .any(|allowed| host.eq_ignore_ascii_case(allowed))
+}
+
+/// Open a provider sign-in URL in the default browser.
+///
+/// Only HTTPS URLs on the known Claude, OpenAI and GitHub sign-in hosts are
+/// opened.
 pub fn open_auth_url(url: &str) -> anyhow::Result<()> {
+    let allowed = [CLAUDE_AUTH_HOSTS, CODEX_AUTH_HOSTS, COPILOT_AUTH_HOSTS]
+        .iter()
+        .any(|hosts| is_allowed_auth_url(url, hosts));
+    if !allowed {
+        anyhow::bail!("Refusing to open an unexpected sign-in URL");
+    }
     open::that(url)?;
     Ok(())
 }
@@ -431,6 +482,7 @@ mod tests {
             &on_phase,
             spec.success_markers,
             spec.browser_mode,
+            spec.auth_hosts,
             &open_url,
         );
 
@@ -458,6 +510,7 @@ mod tests {
             &on_phase,
             &["Login successful"],
             BrowserOpenMode::CliManaged,
+            CLAUDE_AUTH_HOSTS,
             &open_url,
         );
 
@@ -485,6 +538,7 @@ mod tests {
             &on_phase,
             spec.success_markers,
             spec.browser_mode,
+            spec.auth_hosts,
             &open_url,
         );
 
@@ -516,6 +570,7 @@ mod tests {
             &on_phase,
             &["Logged in as"],
             BrowserOpenMode::OpenPrintedUrl,
+            COPILOT_AUTH_HOSTS,
             &open_url,
         );
 
@@ -535,6 +590,7 @@ mod tests {
             &on_phase,
             &["Login successful"],
             BrowserOpenMode::OpenPrintedUrl,
+            CODEX_AUTH_HOSTS,
             &open_url,
         );
 
@@ -542,5 +598,90 @@ mod tests {
 
         assert!(matches!(outcome, Some(LoginOutcome::Success)));
         assert_eq!(*phases.borrow(), vec![LoginPhase::Complete]);
+    }
+
+    #[test]
+    fn auth_url_allowlist_accepts_exact_https_sign_in_hosts() {
+        assert!(is_allowed_auth_url(
+            "https://auth.openai.com/codex/device",
+            CODEX_AUTH_HOSTS
+        ));
+        assert!(is_allowed_auth_url(
+            "https://github.com/login/device",
+            COPILOT_AUTH_HOSTS
+        ));
+        assert!(is_allowed_auth_url(
+            "https://GitHub.com/login/device",
+            COPILOT_AUTH_HOSTS
+        ));
+        assert!(is_allowed_auth_url(
+            "https://claude.ai/oauth/authorize?code=true",
+            CLAUDE_AUTH_HOSTS
+        ));
+        assert!(is_allowed_auth_url(
+            "https://platform.claude.com/oauth/authorize",
+            CLAUDE_AUTH_HOSTS
+        ));
+    }
+
+    #[test]
+    fn auth_url_allowlist_rejects_lookalikes_and_other_hosts() {
+        for url in [
+            "http://github.com/login/device",
+            "https://github.com.evil.test/login/device",
+            "https://evilgithub.com/login/device",
+            "https://gist.github.com/login/device",
+            "https://github.com@evil.test/login/device",
+            "https://user@github.com/login/device",
+            "https://github.com:8443/login/device",
+            "https://140.82.112.3/login/device",
+            "file:///etc/passwd",
+            "not a url",
+        ] {
+            assert!(!is_allowed_auth_url(url, COPILOT_AUTH_HOSTS), "{url}");
+        }
+        assert!(!is_allowed_auth_url(
+            "https://github.com/login/device",
+            CODEX_AUTH_HOSTS
+        ));
+    }
+
+    #[test]
+    fn open_printed_url_mode_skips_urls_outside_the_allowlist() {
+        let phases = RefCell::new(Vec::new());
+        let opened = RefCell::new(Vec::<String>::new());
+        let on_phase = |phase| phases.borrow_mut().push(phase);
+        let open_url = |url: &str| opened.borrow_mut().push(url.to_string());
+        let spec = copilot_login_spec();
+        let mut state = CliLoginState::new(
+            30,
+            &on_phase,
+            spec.success_markers,
+            spec.browser_mode,
+            spec.auth_hosts,
+            &open_url,
+        );
+
+        state.handle_line("See https://evil.test/login/device for help");
+        assert!(phases.borrow().is_empty());
+        assert!(opened.borrow().is_empty());
+
+        state.handle_line("Open https://github.com/login/device in your browser");
+        assert_eq!(*phases.borrow(), vec![LoginPhase::WaitingBrowser]);
+        assert_eq!(
+            *opened.borrow(),
+            vec!["https://github.com/login/device".to_string()]
+        );
+        let result = state.into_result(LoginOutcome::TimedOut);
+        assert_eq!(
+            result.auth_link.as_deref(),
+            Some("https://github.com/login/device")
+        );
+    }
+
+    #[test]
+    fn open_auth_url_refuses_unexpected_hosts() {
+        let error = open_auth_url("https://evil.test/oauth").expect_err("must refuse");
+        assert!(error.to_string().contains("unexpected sign-in URL"));
     }
 }

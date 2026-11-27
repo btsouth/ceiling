@@ -12,9 +12,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use regex_lite::Regex;
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
-#[cfg(windows)]
-use std::process::{Command as StdCommand, Stdio};
+use std::process::Command as StdCommand;
 
 use crate::cli::tty_runner::{TtyCommandOptions, TtyCommandRunner};
 use crate::core::{
@@ -1027,16 +1025,13 @@ fn which_claude() -> Option<std::path::PathBuf> {
 
 #[cfg(windows)]
 fn find_windows_claude_in_path() -> Option<std::path::PathBuf> {
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
     let where_exe = crate::host::windows_where_exe()?;
     let mut command = StdCommand::new(where_exe);
-    command
-        .arg("claude")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW);
-    let output = command.output().ok()?;
+    command.arg("claude");
+    let output = crate::providers::cli_probe::output_with_timeout(
+        &mut command,
+        crate::providers::cli_probe::PROBE_TIMEOUT,
+    )?;
 
     if !output.status.success() {
         return None;
@@ -1070,15 +1065,12 @@ fn find_windows_claude_in_path() -> Option<std::path::PathBuf> {
 fn detect_claude_version() -> Option<String> {
     let claude_path = which_claude()?;
 
-    #[cfg(windows)]
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-
     let mut cmd = std::process::Command::new(claude_path);
     cmd.args(["--version"]);
-    #[cfg(windows)]
-    cmd.creation_flags(CREATE_NO_WINDOW);
-
-    let output = cmd.output().ok()?;
+    let output = crate::providers::cli_probe::output_with_timeout(
+        &mut cmd,
+        crate::providers::cli_probe::PROBE_TIMEOUT,
+    )?;
 
     if output.status.success() {
         let version_str = String::from_utf8_lossy(&output.stdout);

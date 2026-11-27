@@ -249,7 +249,9 @@ fn apply_transition_request(
     request: ShellTransitionRequest,
     force_same_mode_apply: bool,
 ) -> Result<SurfaceMode, String> {
-    let _transition_guard = SHELL_TRANSITION_SERIAL.lock().unwrap();
+    let _transition_guard = SHELL_TRANSITION_SERIAL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // #410: a dead `main` would show as an empty transparent frame. The
     // guard rebuilds it off-thread and replays this request afterwards, so
     // returning here is the recovery starting, not the request being lost.
@@ -268,7 +270,7 @@ fn apply_transition_request(
         .ok_or_else(|| "app state unavailable".to_string())?;
 
     let (previous, resolution) = {
-        let guard = st.lock().unwrap();
+        let guard = st.lock().unwrap_or_else(|e| e.into_inner());
         let previous = current_surface_snapshot(&guard);
         let resolution = resolve_transition_request(&guard, &request, force_same_mode_apply);
         (previous, resolution)
@@ -527,7 +529,7 @@ pub(super) fn commit_surface_snapshot(
     let st = app
         .try_state::<Mutex<AppState>>()
         .ok_or_else(|| "app state unavailable".to_string())?;
-    let mut guard = st.lock().unwrap();
+    let mut guard = st.lock().unwrap_or_else(|e| e.into_inner());
     restore_surface_snapshot(&mut guard, snapshot);
     Ok(())
 }

@@ -8,6 +8,7 @@ import type {
   SettingsUpdate,
 } from "../../../types/bridge";
 import { formatLocale } from "../../../lib/formatLocale";
+import { maskIdentity } from "../../../lib/privacy";
 import { useLocale } from "../../../hooks/useLocale";
 import { ConfirmDialog } from "../../../components/ConfirmDialog";
 import { useTabListKeyboard } from "../../../hooks/useTabListKeyboard";
@@ -56,6 +57,8 @@ interface Props {
   providerMetrics: SettingsSnapshot["providerMetrics"];
   wayfinderGatewayUrl: string;
   settingsDisabled: boolean;
+  /** "Hide personal info": mask addresses in identity rows and account tabs. */
+  hidePersonalInfo?: boolean;
   onSettingsChange: (patch: SettingsUpdate) => void;
 }
 
@@ -76,6 +79,7 @@ export function ProviderDetailPane({
   providerMetrics,
   wayfinderGatewayUrl,
   settingsDisabled,
+  hidePersonalInfo = false,
   onSettingsChange,
 }: Props) {
   const { t } = useLocale();
@@ -226,6 +230,8 @@ export function ProviderDetailPane({
     selectedAccountIdRef.current = null;
     setSelectedAccountId(null);
     ++requestEpochRef.current;
+    // An action error belongs to the provider it was raised on.
+    setError(null);
     if (!providerId) {
       setDetail(null);
       setRegionOptions([]);
@@ -416,15 +422,17 @@ export function ProviderDetailPane({
       setRevokeStatus(t("CredentialRevoked"));
       selectedAccountIdRef.current = null;
       setSelectedAccountId(null);
+      let refreshError: string | null = null;
       try {
         await refreshProviders();
       } catch (e) {
-        if (providerIdRef.current === revokedProviderId) {
-          setError(String(e));
-        }
+        refreshError = String(e);
       }
       if (providerIdRef.current !== revokedProviderId) return;
       await load(revokedProviderId);
+      if (refreshError && providerIdRef.current === revokedProviderId) {
+        setError(refreshError);
+      }
     } catch (e) {
       if (providerIdRef.current === revokedProviderId) {
         setError(String(e));
@@ -480,7 +488,7 @@ export function ProviderDetailPane({
                 disabled={loading}
                 onClick={() => selectAccount(account.accountId)}
               >
-                {account.label}
+                {maskIdentity(account.label, hidePersonalInfo) ?? account.label}
               </button>
             );
           })}
@@ -491,7 +499,23 @@ export function ProviderDetailPane({
         {...(hasAccountTabs ? getPanelProps() : {})}
         className="provider-detail__body"
       >
-        <IdentitySection provider={detail} subtitle={subtitle} t={t} />
+        {error && (
+          <div
+            className="provider-detail-error provider-detail-error--action"
+            role="alert"
+          >
+            <p>
+              {t("StateError")}: {error}
+            </p>
+          </div>
+        )}
+
+        <IdentitySection
+          provider={detail}
+          subtitle={subtitle}
+          hideEmail={hidePersonalInfo}
+          t={t}
+        />
 
         <DataSourceSection provider={detail} t={t} />
 

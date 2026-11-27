@@ -259,7 +259,7 @@ pub fn hide(app: &AppHandle) -> Result<(), String> {
             .ok_or_else(|| "app state unavailable".to_string())?;
         state
             .lock()
-            .map_err(|e| e.to_string())?
+            .unwrap_or_else(|e| e.into_inner())
             .clear_flyout_reveal();
         window.hide().map_err(|e| e.to_string())?;
     }
@@ -310,7 +310,7 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) -
                 return true;
             };
             {
-                let mut guard = st.lock().unwrap();
+                let mut guard = st.lock().unwrap_or_else(|e| e.into_inner());
                 if guard.take_startup_tray_blur_grace(Instant::now()) {
                     return true;
                 }
@@ -327,7 +327,7 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) -
         tauri::WindowEvent::Focused(true) => {
             if let Some(st) = app.try_state::<Mutex<AppState>>() {
                 st.lock()
-                    .unwrap()
+                    .unwrap_or_else(|e| e.into_inner())
                     .clear_gesture_guard_on_refocus(Instant::now());
             }
             true

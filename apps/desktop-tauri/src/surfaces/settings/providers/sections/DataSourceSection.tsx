@@ -32,7 +32,12 @@ export function DataSourceSection({ provider, t }: Props) {
       <button
         type="button"
         className="provider-detail-datasource__link"
-        onClick={() => void openExternalUrl(DATA_SOURCES_DOC_URL)}
+        onClick={() =>
+          void openExternalUrl(DATA_SOURCES_DOC_URL).catch(() => {
+            // Opening the browser can fail (no handler, policy); the link is
+            // informational, so there is nothing else to fall back to here.
+          })
+        }
       >
         {t("DataSourceLearnMore")}
       </button>

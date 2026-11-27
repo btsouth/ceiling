@@ -106,7 +106,10 @@ impl InfiniClient {
         Self {
             api_key,
             base_url: Self::DEFAULT_BASE_URL.to_string(),
-            client: Client::new(),
+            client: Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| Client::new()),
         }
     }
 

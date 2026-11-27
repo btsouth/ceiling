@@ -1,7 +1,7 @@
 //! Ollama provider implementation
 //!
 //! Fetches usage data by scraping the Ollama settings page
-//! Uses session cookies from browser or manual input
+//! Uses a manually saved session cookie
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -9,7 +9,6 @@ use regex_lite::Regex;
 use reqwest::Url;
 use serde::Deserialize;
 
-use crate::browser::cookies::{Cookie, CookieExtractor};
 use crate::core::{
     FetchContext, Provider, ProviderError, ProviderFetchResult, ProviderId, ProviderMetadata,
     RateWindow, SourceMode, UsageSnapshot,
@@ -47,14 +46,12 @@ struct UsageBlock {
 
 enum OllamaCookieSource {
     Manual(String),
-    Browser(Vec<Cookie>),
 }
 
 impl OllamaCookieSource {
     fn header_for_url(&self, url: &Url) -> Option<String> {
         match self {
             Self::Manual(header) => should_attach_ollama_cookie(url).then(|| header.clone()),
-            Self::Browser(cookies) => ollama_cookie_header_for_url(cookies, url),
         }
     }
 }
@@ -474,37 +471,6 @@ fn has_recognized_ollama_session_cookie(header: &str) -> bool {
     })
 }
 
-fn ollama_cookie_header_for_url(cookies: &[Cookie], url: &Url) -> Option<String> {
-    let cookies: Vec<_> = cookies
-        .iter()
-        .filter(|cookie| cookie_applies_to_ollama_url(cookie, url))
-        .cloned()
-        .collect();
-    let header = CookieExtractor::build_cookie_header(&cookies);
-    has_recognized_ollama_session_cookie(&header).then_some(header)
-}
-
-fn cookie_applies_to_ollama_url(cookie: &Cookie, url: &Url) -> bool {
-    let domain = cookie
-        .domain
-        .trim()
-        .trim_end_matches('.')
-        .to_ascii_lowercase();
-    let path = if cookie.path.is_empty() {
-        "/"
-    } else {
-        cookie.path.as_str()
-    };
-    let request_path = url.path();
-    should_attach_ollama_cookie(url)
-        && (domain == OLLAMA_COOKIE_DOMAIN
-            || domain.strip_prefix('.') == Some(OLLAMA_COOKIE_DOMAIN))
-        && (path == "/"
-            || request_path == path
-            || (request_path.starts_with(path)
-                && (path.ends_with('/') || request_path.as_bytes().get(path.len()) == Some(&b'/'))))
-}
-
 fn is_recognized_ollama_session_cookie_name(name: &str) -> bool {
     OLLAMA_SESSION_COOKIE_NAMES.contains(&name)
         || is_chunked_nextauth_cookie_name(name, "__Secure-next-auth.session-token")
@@ -654,66 +620,6 @@ mod tests {
             "next-auth.session-token.evil=auth"
         ));
         assert!(!has_recognized_ollama_session_cookie("theme=dark"));
-    }
-
-    #[test]
-    fn limits_browser_cookie_headers_to_ollama_settings_scope() {
-        use crate::browser::cookies::Cookie;
-
-        let cookie = |name: &str, domain: &str, path: &str| Cookie {
-            name: name.to_string(),
-            value: "test".to_string(),
-            domain: domain.to_string(),
-            path: path.to_string(),
-            expires: None,
-            is_secure: true,
-            is_http_only: true,
-        };
-        let cookies = [
-            cookie("wos-session", ".ollama.com", "/"),
-            cookie("wos-session", "signin.ollama.com", "/"),
-            cookie("__Secure-session", "ollama.com", "/signin"),
-        ];
-
-        assert_eq!(
-            ollama_cookie_header_for_url(
-                &cookies,
-                &Url::parse("https://ollama.com/settings").unwrap()
-            )
-            .as_deref(),
-            Some("wos-session=test")
-        );
-        assert_eq!(
-            ollama_cookie_header_for_url(
-                &[cookie("__Secure-session", "ollama.com", "/settings")],
-                &Url::parse("https://ollama.com/api/tags").unwrap()
-            ),
-            None
-        );
-        assert_eq!(
-            ollama_cookie_header_for_url(
-                &[cookie("__Secure-session", "ollama.com", "/settings")],
-                &Url::parse("https://ollama.com/settings/account").unwrap()
-            )
-            .as_deref(),
-            Some("__Secure-session=test")
-        );
-        let source = OllamaCookieSource::Browser(vec![
-            cookie("__Secure-session", "ollama.com", "/settings"),
-            cookie("wos-session", "ollama.com", "/api"),
-        ]);
-        assert_eq!(
-            source
-                .header_for_url(&Url::parse("https://ollama.com/settings").unwrap())
-                .as_deref(),
-            Some("__Secure-session=test")
-        );
-        assert_eq!(
-            source
-                .header_for_url(&Url::parse("https://ollama.com/api/models").unwrap())
-                .as_deref(),
-            Some("wos-session=test")
-        );
     }
 
     #[test]

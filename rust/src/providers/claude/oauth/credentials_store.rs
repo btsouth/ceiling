@@ -412,6 +412,69 @@ pub(super) fn persist_refreshed_credentials(
     )
 }
 
+/// Whether a refreshed token for `source` could be written back right now.
+///
+/// Claude rotates the refresh token on every exchange, so refreshing without
+/// being able to persist the result retires the token Claude Code still holds
+/// and leaves the CLI signed out. Callers check this before hitting the
+/// network and skip the refresh when it is `false`.
+pub(super) fn can_persist_refreshed_for_source(source: &CredentialSource) -> bool {
+    match source {
+        // Environment tokens have nowhere to write a rotated refresh token.
+        CredentialSource::Environment => false,
+        CredentialSource::File(path) => credentials_file_is_writable(path),
+        CredentialSource::Keyring(_) => crate::keychain::allowed(crate::keychain::Scope::Claude),
+    }
+}
+
+/// The credentials file still exists as a regular file (through any link),
+/// this process can open it for writing, and its parent directory accepts new
+/// files (needed for the lock file and atomic temp-file replace).
+fn credentials_file_is_writable(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.permissions().readonly() {
+        return false;
+    }
+    // Opening for write without truncation changes nothing on disk; it proves
+    // file-level write access for the existing credentials file.
+    if std::fs::OpenOptions::new().write(true).open(path).is_err() {
+        return false;
+    }
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    dir_accepts_new_files(parent)
+}
+
+/// Probe whether `dir` lets this process create and remove a file, without
+/// leaving anything behind.
+fn dir_accepts_new_files(dir: &Path) -> bool {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let pid = std::process::id();
+    for attempt in 0..4u32 {
+        let probe = dir.join(format!(".ceiling-write-probe-{pid}-{nonce}-{attempt}"));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&probe)
+        {
+            Ok(file) => {
+                drop(file);
+                let _ = std::fs::remove_file(&probe);
+                return true;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
 pub(super) fn persist_refreshed_for_source(
     credentials: &ClaudeOAuthCredentials,
     source: &CredentialSource,
@@ -602,10 +665,10 @@ fn apply_refresh_to_credentials_json(
 mod tests {
     use super::{
         CredentialSource, ENV_TOKEN_KEY, KEYRING_SERVICE, apply_refresh_to_credentials_json,
-        cached_refreshed_if_fresher, credentials_path, credentials_path_from,
-        disk_still_holds_exchanged_refresh, load_credentials, merge_refreshed_credentials_json,
-        parse_credentials_json, persist_refreshed_credentials, persist_refreshed_for_source,
-        store_refreshed,
+        cached_refreshed_if_fresher, can_persist_refreshed_for_source, credentials_path,
+        credentials_path_from, disk_still_holds_exchanged_refresh, load_credentials,
+        merge_refreshed_credentials_json, parse_credentials_json, persist_refreshed_credentials,
+        persist_refreshed_for_source, store_refreshed,
     };
     use crate::core::ProviderError;
     use crate::providers::claude::oauth::ClaudeOAuthCredentials;
@@ -1444,6 +1507,69 @@ mod tests {
         let (credentials, source) = load_credentials(None).expect("keyring credentials");
         assert_eq!(credentials.access_token, "from-keyring");
         assert_eq!(source, CredentialSource::Keyring("sbs-1023-user".into()));
+    }
+
+    #[test]
+    fn refresh_preflight_skips_environment_tokens() {
+        assert!(!can_persist_refreshed_for_source(
+            &CredentialSource::Environment
+        ));
+    }
+
+    #[test]
+    fn refresh_preflight_allows_a_writable_credentials_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed_credentials_file(dir.path());
+        assert!(can_persist_refreshed_for_source(&CredentialSource::File(
+            path
+        )));
+    }
+
+    #[test]
+    fn refresh_preflight_skips_a_missing_credentials_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".credentials.json");
+        assert!(!can_persist_refreshed_for_source(&CredentialSource::File(
+            path
+        )));
+    }
+
+    #[test]
+    fn refresh_preflight_skips_a_directory_in_place_of_the_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join(".credentials.json");
+        std::fs::create_dir(&path).expect("directory");
+        assert!(!can_persist_refreshed_for_source(&CredentialSource::File(
+            path
+        )));
+    }
+
+    #[test]
+    #[allow(clippy::permissions_set_readonly_false)]
+    fn refresh_preflight_skips_a_read_only_credentials_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = seed_credentials_file(dir.path());
+        let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&path, permissions).expect("make read-only");
+
+        let allowed = can_persist_refreshed_for_source(&CredentialSource::File(path.clone()));
+
+        let mut permissions = std::fs::metadata(&path).expect("metadata").permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&path, permissions).expect("restore write access");
+        assert!(!allowed, "a read-only credentials file must skip refresh");
+    }
+
+    #[test]
+    fn refresh_preflight_follows_keychain_write_opt_out() {
+        let source = CredentialSource::Keyring("sbs-1023-user".into());
+        {
+            let _keychain = crate::keychain::with_claude_allowed(false);
+            assert!(!can_persist_refreshed_for_source(&source));
+        }
+        let _keychain = crate::keychain::with_claude_allowed(true);
+        assert!(can_persist_refreshed_for_source(&source));
     }
 
     /// SBS-1023: a refreshed Claude token must not be written back to the

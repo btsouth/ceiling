@@ -107,16 +107,21 @@ function detail(
     dashboardUrl: null,
     statusPageUrl: null,
     buyCreditsUrl: null,
+    supportsLogin: false,
     hasSnapshot: true,
     cookieSource: null,
     region: null,
   };
 }
 
-function renderPane(providerId: string | null) {
+function renderPane(
+  providerId: string | null,
+  options: { hidePersonalInfo?: boolean } = {},
+) {
   return render(
     <ProviderDetailPane
       providerId={providerId}
+      hidePersonalInfo={options.hidePersonalInfo}
       resetTimeRelative
       providerMetrics={{}}
       wayfinderGatewayUrl=""
@@ -168,6 +173,59 @@ describe("ProviderDetailPane request ordering", () => {
     tauriMocks.refreshProviders.mockResolvedValue(undefined);
     tauriMocks.revokeProviderCredentials.mockResolvedValue(undefined);
     tauriMocks.triggerProviderLogin.mockResolvedValue(undefined);
+  });
+
+  it("shows an action error as an alert while the detail stays loaded, and clears it on provider change", async () => {
+    tauriMocks.getProviderDetail.mockImplementation((providerId: string) =>
+      Promise.resolve(detail(providerId, null, `${providerId}@example.com`)),
+    );
+    tauriMocks.triggerProviderLogin.mockRejectedValue("login exploded");
+
+    const view = renderPane("claude");
+    await screen.findByTestId("provider-identity");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "switch-account" }));
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("login exploded");
+    expect(screen.getByTestId("provider-identity")).toHaveTextContent(
+      "claude:ambient:claude@example.com",
+    );
+
+    view.rerender(
+      <ProviderDetailPane
+        providerId="codex"
+        resetTimeRelative
+        providerMetrics={{}}
+        wayfinderGatewayUrl=""
+        settingsDisabled={false}
+        onSettingsChange={vi.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("provider-identity")).toHaveTextContent("codex:"),
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("masks email account tab labels when Hide personal info is on", async () => {
+    const withEmailTabs: ProviderDetail = {
+      ...detail("codex", "personal", "personal@example.com"),
+      accounts: [
+        { accountId: "personal", label: "personal@example.com", tint: null },
+        { accountId: "work", label: "Work", tint: null },
+      ],
+    };
+    tauriMocks.getProviderDetail.mockResolvedValue(withEmailTabs);
+
+    renderPane("codex", { hidePersonalInfo: true });
+    await screen.findByTestId("provider-identity");
+
+    expect(screen.queryByText("personal@example.com")).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "p•••••••@example.com" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Work" })).toBeInTheDocument();
   });
 
   it("keeps the newest account when account requests resolve out of order", async () => {

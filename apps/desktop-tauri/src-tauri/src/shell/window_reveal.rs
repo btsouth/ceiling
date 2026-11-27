@@ -20,7 +20,7 @@ fn app_state(app: &AppHandle) -> Result<tauri::State<'_, Mutex<AppState>>, Strin
 pub(super) fn arm(app: &AppHandle, target: RevealWindow, native_ready: bool) -> Result<(), String> {
     app_state(app)?
         .lock()
-        .map_err(|error| error.to_string())?
+        .unwrap_or_else(|e| e.into_inner())
         .arm_window_reveal(target, Instant::now(), native_ready);
     Ok(())
 }

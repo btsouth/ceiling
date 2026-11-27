@@ -269,14 +269,33 @@ pub fn hide_to_tray_if_current<P>(
     is_eligible: P,
 ) -> Result<Option<SurfaceMode>, String>
 where
-    P: FnOnce(SurfaceMode) -> bool,
+    P: Fn(SurfaceMode) -> bool,
 {
-    let _transition_guard = SHELL_TRANSITION_SERIAL.lock().unwrap();
     let st = app
         .try_state::<Mutex<AppState>>()
         .ok_or_else(|| "app state unavailable".to_string())?;
+    // Cheap eligibility pre-check before the transition serial. Window events
+    // (Focused(false), CloseRequested) call this on the main thread, and a
+    // transition running elsewhere holds the serial while it waits on the main
+    // thread for window getters. Bailing out early for the common ineligible
+    // case keeps the main thread from ever blocking on that lock. The check is
+    // repeated under the serial below, so a mode that changes in between is
+    // still decided against the state the transition actually sees.
+    {
+        let current = st
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .surface_machine
+            .current();
+        if !is_eligible(current) {
+            return Ok(None);
+        }
+    }
+    let _transition_guard = SHELL_TRANSITION_SERIAL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let plan = {
-        let mut guard = st.lock().unwrap();
+        let mut guard = st.lock().unwrap_or_else(|e| e.into_inner());
         let plan = prepare_hide_to_tray_if_current(&mut guard, is_eligible);
         if plan.is_some() {
             guard.take_window_reveal(crate::state::RevealWindow::Main);
@@ -315,7 +334,7 @@ pub(super) fn prepare_hide_to_tray_if_current<P>(
     is_eligible: P,
 ) -> Option<HideToTrayPlan>
 where
-    P: FnOnce(SurfaceMode) -> bool,
+    P: Fn(SurfaceMode) -> bool,
 {
     let current = state.surface_machine.current();
     if !is_eligible(current) {

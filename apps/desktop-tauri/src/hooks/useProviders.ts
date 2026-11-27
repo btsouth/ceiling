@@ -133,10 +133,16 @@ export function useProviders(options: UseProvidersOptions = {}): UseProvidersRes
   const refresh = useCallback(() => {
     if (refreshingRef.current) return;
     refreshingRef.current = true;
-    refreshProviders().catch(() => {
-      refreshingRef.current = false;
-      setRefreshingProviderIds(new Set());
-    });
+    refreshProviders()
+      .catch(() => {
+        setRefreshingProviderIds(new Set());
+      })
+      .finally(() => {
+        // The invoke settles once the backend cycle is over (or was skipped
+        // because another one owned it, in which case no `refresh-complete`
+        // reaches this call). Never leave the guard latched on that path.
+        refreshingRef.current = false;
+      });
   }, []);
 
   useEffect(() => {
@@ -153,6 +159,9 @@ export function useProviders(options: UseProvidersOptions = {}): UseProvidersRes
         ) {
           mergeSnapshots(cached);
         }
+      })
+      .catch(() => {
+        // No cache yet is the same as an empty one; live events still land.
       })
       .finally(() => {
         if (!cancelled) {
@@ -189,6 +198,9 @@ export function useProviders(options: UseProvidersOptions = {}): UseProvidersRes
           if (!cancelled && epoch === settingsReloadEpochRef.current) {
             mergeSnapshots(cached, true);
           }
+        })
+        .catch(() => {
+          // Keep the current view; queued events still flush below.
         })
         .finally(() => {
           if (!cancelled && epoch === settingsReloadEpochRef.current) {
@@ -240,12 +252,13 @@ export function useProviders(options: UseProvidersOptions = {}): UseProvidersRes
       const refreshPromise = options.forceRefreshOnMount
         ? refreshProviders()
         : refreshProvidersIfStale();
-      refreshPromise.catch(() => {
-        if (!cancelled) {
-          refreshingRef.current = false;
-          setRefreshingProviderIds(new Set());
-        }
-      });
+      refreshPromise
+        .catch(() => {
+          if (!cancelled) setRefreshingProviderIds(new Set());
+        })
+        .finally(() => {
+          if (!cancelled) refreshingRef.current = false;
+        });
     };
 
     // Kick off the initial refresh, but let the backend reuse fresh cache.

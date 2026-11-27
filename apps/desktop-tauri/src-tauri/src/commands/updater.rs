@@ -6,6 +6,17 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
+struct ApplyInFlightGuard<'a>(&'a Mutex<AppState>);
+
+impl Drop for ApplyInFlightGuard<'_> {
+    fn drop(&mut self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .update_apply_in_flight = false;
+    }
+}
+
 use tauri::Manager;
 
 use super::open_url_in_browser;
@@ -30,7 +41,7 @@ pub async fn check_for_updates(
     // silent no-op; a "still latest" result restores Ready and the installer.
     {
         let mut guard = state.lock().map_err(|e| e.to_string())?;
-        if should_skip_update_check(&guard.update_state) {
+        if guard.update_apply_in_flight || should_skip_update_check(&guard.update_state) {
             return Ok(guard.update_payload());
         }
         let staged = matches!(guard.update_state, UpdateState::Ready)
@@ -138,8 +149,23 @@ fn commit_check_result(
     let applied = apply_check_result(result, staged);
     guard.update_state = applied.state;
     guard.update_info = applied.info;
+    // Ready -> Available (a newer release superseded the staged one): the old
+    // installer will never be applied, so do not leave it in the staging dir.
+    if guard.installer_path != applied.installer_path && !guard.update_apply_in_flight {
+        discard_staged_installer(guard.installer_path.take());
+    }
     guard.installer_path = applied.installer_path;
     true
+}
+
+/// Delete a staged installer nothing will apply any more.
+fn discard_staged_installer(path: Option<PathBuf>) {
+    if let Some(path) = path
+        && let Err(error) = std::fs::remove_file(&path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(%error, "could not remove an abandoned staged installer");
+    }
 }
 
 /// Map a completed check onto Idle / Available / Error.
@@ -256,7 +282,7 @@ fn spawn_download_progress_task(
 fn emit_download_progress(app: &tauri::AppHandle, progress: f32) {
     let st = app.state::<Mutex<AppState>>();
     let payload = {
-        let mut guard = st.lock().unwrap();
+        let mut guard = st.lock().unwrap_or_else(|e| e.into_inner());
         if !record_download_progress(&mut guard, progress) {
             return;
         }
@@ -308,7 +334,7 @@ fn finish_download(
     staged_info: Option<UpdateInfo>,
 ) -> UpdateStatePayload {
     let st = app.state::<Mutex<AppState>>();
-    let mut guard = st.lock().unwrap();
+    let mut guard = st.lock().unwrap_or_else(|e| e.into_inner());
     record_download_finish(&mut guard, update_state, installer_path, staged_info);
     guard.update_payload()
 }
@@ -329,9 +355,7 @@ fn record_download_finish(
         // Somebody else owns the slot now - a dismiss, most likely. Nothing
         // will ever apply this file, and the staging directory would keep one
         // installer per dismissed download, so remove it on the way out.
-        if let Some(path) = installer_path {
-            let _ = std::fs::remove_file(&path);
-        }
+        discard_staged_installer(installer_path);
         return;
     }
     guard.update_state = update_state;
@@ -361,6 +385,15 @@ pub(crate) fn apply_ready_update(
 }
 
 fn apply_ready_installer(state: &Mutex<AppState>) -> Result<(), String> {
+    {
+        let mut guard = state.lock().map_err(|e| e.to_string())?;
+        if guard.update_apply_in_flight {
+            return Err("An update installation is already in progress".to_string());
+        }
+        guard.update_apply_in_flight = true;
+    }
+    let _apply_guard = ApplyInFlightGuard(state);
+
     let result = (|| {
         let (path, expected_sha256) = {
             let guard = state.lock().map_err(|e| e.to_string())?;
@@ -408,7 +441,11 @@ pub fn dismiss_update(
         let mut guard = state.lock().map_err(|e| e.to_string())?;
         guard.update_state = UpdateState::Idle;
         guard.update_info = None;
-        guard.installer_path = None;
+        if !guard.update_apply_in_flight {
+            discard_staged_installer(guard.installer_path.take());
+        } else {
+            guard.installer_path = None;
+        }
         guard.update_payload()
     };
     events::emit_update_state_changed(&app, &payload);
@@ -597,6 +634,46 @@ mod tests {
                 .and_then(|item| item.expected_sha256.clone()),
             Some("a".repeat(64))
         );
+    }
+
+    #[test]
+    fn superseded_staged_installer_is_deleted_on_ready_to_available() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("Ceiling-1.5.35-Setup.exe");
+        std::fs::write(&path, b"installer bytes").expect("write installer");
+
+        let mut state = AppState::new();
+        state.update_state = UpdateState::Checking;
+        state.update_info = Some(sample_info("v1.5.35"));
+        state.installer_path = Some(path.clone());
+
+        assert!(commit_check_result(
+            &mut state,
+            Ok(Ok(Some(sample_info("v1.5.36"))))
+        ));
+        assert_eq!(
+            state.update_state,
+            UpdateState::Available("v1.5.36".to_string())
+        );
+        assert!(state.installer_path.is_none());
+        assert!(!path.exists(), "the superseded installer must be removed");
+    }
+
+    #[test]
+    fn same_release_recheck_keeps_the_staged_installer() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let path = temp.path().join("Ceiling-1.5.35-Setup.exe");
+        std::fs::write(&path, b"installer bytes").expect("write installer");
+
+        let mut state = AppState::new();
+        state.update_state = UpdateState::Checking;
+        state.update_info = Some(sample_info("v1.5.35"));
+        state.installer_path = Some(path.clone());
+
+        assert!(commit_check_result(&mut state, Ok(Ok(None))));
+        assert_eq!(state.update_state, UpdateState::Ready);
+        assert_eq!(state.installer_path.as_deref(), Some(path.as_path()));
+        assert!(path.exists());
     }
 
     #[test]

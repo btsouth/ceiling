@@ -7,6 +7,8 @@ import { useSettings } from "../hooks/useSettings";
 import { getProviderIcon } from "../components/providers/providerIcons";
 import { orderProviderSnapshots } from "../lib/providerOrder";
 import { useLocale } from "../hooks/useLocale";
+import { formatLocale } from "../lib/formatLocale";
+import type { LocaleKey } from "../i18n/keys";
 import {
   allMeasuredWindows,
   bankedResetCredits,
@@ -40,13 +42,19 @@ const FLYOUT_FALLBACK_HEIGHT = 174;
 const MAX_VISIBLE_PROVIDERS = 6;
 const MAX_VISIBLE_WINDOWS_PER_PROVIDER = 4;
 
-function compactDuration(resetsAt: string | null, fallback: string | null, now: number): string {
-  if (!resetsAt) return fallback?.replace(/^resets?\s+(in\s+)?/i, "") ?? "No reset";
+function compactDuration(
+  resetsAt: string | null,
+  fallback: string | null,
+  now: number,
+  t: (key: LocaleKey) => string,
+): string {
+  const noReset = t("TaskbarFlyoutNoReset");
+  if (!resetsAt) return fallback?.replace(/^resets?\s+(in\s+)?/i, "") ?? noReset;
   const target = Date.parse(resetsAt);
-  if (!Number.isFinite(target)) return fallback ?? "No reset";
+  if (!Number.isFinite(target)) return fallback ?? noReset;
   // Floor-and-clamp, same as tray/CLI/tooltip. The old ceil made 61-119s
   // read "2m" while every other surface said "1m" (SBS-927).
-  return formatResetCountdown(target - now) ?? "Now";
+  return formatResetCountdown(target - now) ?? t("TaskbarFlyoutResetNow");
 }
 
 function valueFor(window: RateWindowSnapshot, showAsUsed: boolean): number {
@@ -188,9 +196,9 @@ function ProviderRow({ provider, showAccount, hideEmail, onStrip, showAsUsed, no
         <div className="taskbar-flyout__provider-content">
           <div className="taskbar-flyout__provider-topline">
             <span className="taskbar-flyout__provider-name">{provider.displayName}</span>
-            <span className="taskbar-flyout__provider-unavailable">Unavailable</span>
+            <span className="taskbar-flyout__provider-unavailable">{t("TaskbarFlyoutUnavailable")}</span>
             {onStrip && (
-              <span className="taskbar-flyout__on-strip">On strip</span>
+              <span className="taskbar-flyout__on-strip">{t("TaskbarFlyoutOnStrip")}</span>
             )}
           </div>
           {accountName && (
@@ -198,7 +206,7 @@ function ProviderRow({ provider, showAccount, hideEmail, onStrip, showAsUsed, no
               {accountName}
             </div>
           )}
-          <div className="taskbar-flyout__provider-status">Last sync failed · open Ceiling for details</div>
+          <div className="taskbar-flyout__provider-status">{t("TaskbarFlyoutLastSyncFailed")}</div>
         </div>
       </div>
     );
@@ -224,11 +232,15 @@ function ProviderRow({ provider, showAccount, hideEmail, onStrip, showAsUsed, no
             <span
               className={`taskbar-flyout__reset-credit${resetCredits === 0 ? " taskbar-flyout__reset-credit--empty" : ""}`}
             >
-              ↻ {resetCredits} {resetCredits === 1 ? "reset ready" : "resets ready"}
+              ↻{" "}
+              {formatLocale(
+                t(resetCredits === 1 ? "TaskbarFlyoutResetReady" : "TaskbarFlyoutResetsReady"),
+                String(resetCredits),
+              )}
             </span>
           )}
           {onStrip && (
-            <span className="taskbar-flyout__on-strip">On strip</span>
+            <span className="taskbar-flyout__on-strip">{t("TaskbarFlyoutOnStrip")}</span>
           )}
         </div>
         {accountName && (
@@ -259,7 +271,7 @@ function ProviderRow({ provider, showAccount, hideEmail, onStrip, showAsUsed, no
               );
             }
             const percent = valueFor(window, showAsUsed);
-            const reset = compactDuration(window.resetsAt, window.resetDescription, now);
+            const reset = compactDuration(window.resetsAt, window.resetDescription, now, t);
             const level = meterLevel(window);
             // A lane billed in currency reads as money first; the percentage is
             // only the shape of the bar beneath it.
@@ -273,7 +285,7 @@ function ProviderRow({ provider, showAccount, hideEmail, onStrip, showAsUsed, no
             // the toggle would put it out of step with the Overview it summarizes.
             const spend = amount
               ? amount.formattedLimit
-                ? `${amount.formattedUsed} of ${amount.formattedLimit}`
+                ? formatLocale(t("TaskbarFlyoutSpendOf"), amount.formattedUsed, amount.formattedLimit)
                 : amount.formattedUsed
               : null;
             return (
@@ -305,7 +317,9 @@ function ProviderRow({ provider, showAccount, hideEmail, onStrip, showAsUsed, no
             );
           })}
           {hiddenWindowCount > 0 && (
-            <div className="taskbar-flyout__window-more">+{hiddenWindowCount} more limits in Ceiling</div>
+            <div className="taskbar-flyout__window-more">
+              {formatLocale(t("TaskbarFlyoutMoreLimits"), String(hiddenWindowCount))}
+            </div>
           )}
         </div>
       </div>
@@ -314,6 +328,7 @@ function ProviderRow({ provider, showAccount, hideEmail, onStrip, showAsUsed, no
 }
 
 export default function TaskbarFlyout({ state }: { state: BootstrapState }) {
+  const { t } = useLocale();
   const { settings } = useSettings(state.settings);
   const { providers, hasLoadedCache } = useProviders({ initialRefreshDelayMs: 800 });
   const [now, setNow] = useState(Date.now());
@@ -355,7 +370,9 @@ export default function TaskbarFlyout({ state }: { state: BootstrapState }) {
   );
 
   const nextReset = earliestReset(taskbarProviders, now);
-  const nextResetText = nextReset ? `Next reset in ${compactDuration(nextReset, null, now)}` : "Usage at a glance";
+  const nextResetText = nextReset
+    ? formatLocale(t("TaskbarFlyoutNextResetIn"), compactDuration(nextReset, null, now, t))
+    : t("TaskbarFlyoutUsageAtAGlance");
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
@@ -433,7 +450,7 @@ export default function TaskbarFlyout({ state }: { state: BootstrapState }) {
 
   return (
     <main className="taskbar-flyout-frame" style={{ "--taskbar-surface": surfaceColor ?? "#073b78" } as CSSProperties}>
-      <section className="taskbar-flyout" ref={surfaceRef} aria-label="Ceiling usage at a glance">
+      <section className="taskbar-flyout" ref={surfaceRef} aria-label={t("TaskbarFlyoutAriaLabel")}>
         <header className="taskbar-flyout__header">
           <CeilingMark size={32} appearance="glass" className="taskbar-flyout__mark" />
           <div>
@@ -473,16 +490,18 @@ export default function TaskbarFlyout({ state }: { state: BootstrapState }) {
             );
           })}
           {visibleProviders.length === 0 && (
-            <div className="taskbar-flyout__empty">Syncing provider usage…</div>
+            <div className="taskbar-flyout__empty">{t("TaskbarFlyoutSyncing")}</div>
           )}
           {hiddenProviderCount > 0 && (
-            <div className="taskbar-flyout__more">+{hiddenProviderCount} more in Ceiling</div>
+            <div className="taskbar-flyout__more">
+              {formatLocale(t("TaskbarFlyoutMoreProviders"), String(hiddenProviderCount))}
+            </div>
           )}
         </div>
 
         <button type="button" className="taskbar-flyout__open" onClick={openCeiling}>
           <svg viewBox="0 0 16 16" aria-hidden><path d="M6.5 3H3.8A1.8 1.8 0 0 0 2 4.8v7.4A1.8 1.8 0 0 0 3.8 14h7.4a1.8 1.8 0 0 0 1.8-1.8V9.5M9 2h5v5M8 8l6-6" /></svg>
-          <span>Open Ceiling</span>
+          <span>{t("TaskbarFlyoutOpenCeiling")}</span>
         </button>
       </section>
     </main>

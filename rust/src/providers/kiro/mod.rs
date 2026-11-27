@@ -23,6 +23,11 @@ use crate::core::{
     RateWindow, SourceMode, UsageSnapshot,
 };
 
+/// `kiro-cli whoami` is a local credential check.
+const KIRO_WHOAMI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// `kiro-cli chat --no-interactive /usage` makes a network round trip.
+const KIRO_USAGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Kiro provider (AWS AI assistant)
 pub struct KiroProvider {
     metadata: ProviderMetadata,
@@ -89,15 +94,11 @@ impl KiroProvider {
         const CREATE_NO_WINDOW: u32 = 0x08000000;
 
         let mut cmd = Command::new(&cli_path);
-        cmd.arg("whoami")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        cmd.arg("whoami").stdin(Stdio::null());
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
-        let output = crate::host::tokio_cli::output(&mut cmd)
-            .await
-            .map_err(|e| ProviderError::Other(format!("Failed to run kiro-cli: {}", e)))?;
+        let output = Self::run_kiro(&mut cmd, KIRO_WHOAMI_TIMEOUT).await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
         let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
@@ -132,14 +133,11 @@ impl KiroProvider {
         let mut cmd = Command::new(&cli_path);
         cmd.args(["chat", "--no-interactive", "/usage"])
             .env("TERM", "xterm-256color")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .stdin(Stdio::null());
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
 
-        let output = crate::host::tokio_cli::output(&mut cmd)
-            .await
-            .map_err(|e| ProviderError::Other(format!("Failed to run kiro-cli: {}", e)))?;
+        let output = Self::run_kiro(&mut cmd, KIRO_USAGE_TIMEOUT).await?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -160,7 +158,30 @@ impl KiroProvider {
             return Err(ProviderError::AuthRequired);
         }
 
-        self.parse_cli_output(combined)
+        match self.parse_cli_output(combined) {
+            Ok(usage) => Ok(usage),
+            // Non-usage output from a failed run is a failed run, not a
+            // parse puzzle: say so instead of guessing at a reading.
+            Err(_) if !output.status.success() => Err(ProviderError::Other(format!(
+                "kiro-cli /usage failed with status {}",
+                output.status.code().unwrap_or(-1)
+            ))),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn run_kiro(
+        cmd: &mut Command,
+        timeout: std::time::Duration,
+    ) -> Result<std::process::Output, ProviderError> {
+        crate::host::tokio_cli::output_with_timeout(cmd, timeout)
+            .await
+            .map_err(|error| match error {
+                crate::host::tokio_cli::Error::TimedOut => ProviderError::Timeout,
+                crate::host::tokio_cli::Error::Io(error) => {
+                    ProviderError::Other(format!("Failed to run kiro-cli: {error}"))
+                }
+            })
     }
 
     /// Parse CLI output to extract usage information

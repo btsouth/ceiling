@@ -19,6 +19,8 @@ const SERVICE: &str = "ce";
 const SIGNING_REGION: &str = "us-east-1";
 const CLOUDWATCH_TARGET: &str = "GraniteServiceVersion20100801.GetMetricData";
 const CLOUDWATCH_SERVICE: &str = "monitoring";
+/// `aws configure export-credentials` may run an SSO credential process.
+const AWS_CLI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
 struct AwsCredentials {
@@ -249,9 +251,10 @@ impl BedrockProvider {
         None
     }
 
-    fn credentials_from_profile(profile: &str) -> Result<AwsCredentials, ProviderError> {
+    async fn credentials_from_profile(profile: &str) -> Result<AwsCredentials, ProviderError> {
         let aws = aws_cli_path()?;
-        let output = std::process::Command::new(&aws)
+        let mut command = tokio::process::Command::new(&aws);
+        command
             .args([
                 "configure",
                 "export-credentials",
@@ -261,8 +264,21 @@ impl BedrockProvider {
                 "process",
             ])
             .env_remove("AWS_PROFILE")
-            .output()
-            .map_err(|e| ProviderError::Other(format!("Failed to run AWS CLI: {e}")))?;
+            .stdin(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            const CREATE_NO_WINDOW: u32 = 0x08000000;
+            command.creation_flags(CREATE_NO_WINDOW);
+        }
+        // SSO profiles can run a credential_process; keep it bounded.
+        let output = crate::host::tokio_cli::output_with_timeout(&mut command, AWS_CLI_TIMEOUT)
+            .await
+            .map_err(|error| match error {
+                crate::host::tokio_cli::Error::TimedOut => ProviderError::Timeout,
+                crate::host::tokio_cli::Error::Io(error) => {
+                    ProviderError::Other(format!("Failed to run AWS CLI: {error}"))
+                }
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -272,7 +288,7 @@ impl BedrockProvider {
         parse_aws_profile_credentials(&output.stdout)
     }
 
-    fn resolve_credentials(ctx: &FetchContext) -> Result<AwsCredentials, ProviderError> {
+    async fn resolve_credentials(ctx: &FetchContext) -> Result<AwsCredentials, ProviderError> {
         if let Some(credentials) = Self::credentials_from_context(ctx.api_key.as_deref()) {
             return Ok(credentials);
         }
@@ -280,7 +296,7 @@ impl BedrockProvider {
         if let Some(profile) =
             Self::profile_from_context(ctx.api_key.as_deref()).or_else(Self::profile_from_env)
         {
-            return Self::credentials_from_profile(&profile);
+            return Self::credentials_from_profile(&profile).await;
         }
 
         Self::credentials_from_env()
@@ -434,7 +450,7 @@ impl BedrockProvider {
         &self,
         ctx: &FetchContext,
     ) -> Result<ProviderFetchResult, ProviderError> {
-        let credentials = Self::resolve_credentials(ctx)?;
+        let credentials = Self::resolve_credentials(ctx).await?;
         let budget = Self::monthly_budget();
         let spend = self.fetch_monthly_spend(&credentials).await?;
         let resets_at = end_of_current_month();

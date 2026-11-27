@@ -41,9 +41,26 @@ vi.mock("../hooks/useSettings", () => ({
 vi.mock("../hooks/useLocale", () => ({
   useLocale: () => ({
     t: (key: string) => {
-      if (key === "NotCurrentlyEnforced") return "Not currently enforced";
-      if (key === "WindowUnavailable") return "Unavailable";
-      return key;
+      const english: Record<string, string> = {
+        NotCurrentlyEnforced: "Not currently enforced",
+        WindowUnavailable: "Unavailable",
+        TaskbarFlyoutNoReset: "No reset",
+        TaskbarFlyoutResetNow: "Now",
+        TaskbarFlyoutUnavailable: "Unavailable",
+        TaskbarFlyoutOnStrip: "On strip",
+        TaskbarFlyoutLastSyncFailed: "Last sync failed · open Ceiling for details",
+        TaskbarFlyoutResetReady: "{} reset ready",
+        TaskbarFlyoutResetsReady: "{} resets ready",
+        TaskbarFlyoutSpendOf: "{} of {}",
+        TaskbarFlyoutMoreLimits: "+{} more limits in Ceiling",
+        TaskbarFlyoutNextResetIn: "Next reset in {}",
+        TaskbarFlyoutUsageAtAGlance: "Usage at a glance",
+        TaskbarFlyoutSyncing: "Syncing provider usage…",
+        TaskbarFlyoutMoreProviders: "+{} more in Ceiling",
+        TaskbarFlyoutOpenCeiling: "Open Ceiling",
+        TaskbarFlyoutAriaLabel: "Ceiling usage at a glance",
+      };
+      return english[key] ?? key;
     },
   }),
 }));

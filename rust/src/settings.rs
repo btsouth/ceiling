@@ -847,6 +847,28 @@ impl Default for Settings {
     }
 }
 
+/// Outcome of reading an existing `settings.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReadState {
+    /// Parsed, missing, or quarantined to an unused backup path.
+    Clean,
+    /// Undecodable and left in place so `load` can retry under the state
+    /// lock (SBS-1029).
+    PendingQuarantine,
+    /// Undecodable and the move aside failed. The file is still live and must
+    /// not be overwritten with defaults.
+    QuarantineFailed,
+}
+
+type RenameFn = fn(&std::path::Path, &std::path::Path) -> std::io::Result<()>;
+
+fn fs_rename(from: &std::path::Path, to: &std::path::Path) -> std::io::Result<()> {
+    std::fs::rename(from, to)
+}
+
+/// Highest numbered `settings.json.bak.N` quarantine tries before giving up.
+const MAX_SETTINGS_BACKUPS: u32 = 1000;
+
 impl Settings {
     /// Apply a mutation to the latest settings while holding the shared
     /// cross-process lock for the complete read-modify-write cycle.
@@ -862,7 +884,13 @@ impl Settings {
         operation: impl FnOnce(&mut Self) -> Result<T, String>,
     ) -> anyhow::Result<(Self, T)> {
         crate::secure_file::with_state_write_lock(|| {
-            let mut settings = Self::load_unlocked();
+            let (mut settings, state) = Self::load_unlocked();
+            if state == ReadState::QuarantineFailed {
+                return Err(std::io::Error::other(
+                    "settings.json could not be read and could not be moved aside; \
+                     refusing to overwrite it",
+                ));
+            }
             let result = operation(&mut settings).map_err(std::io::Error::other)?;
             settings.save_unlocked().map_err(std::io::Error::other)?;
             Ok((settings, result))
@@ -888,10 +916,35 @@ impl Settings {
         path.with_extension("json.bak")
     }
 
+    /// First unused quarantine destination: `settings.json.bak`, then
+    /// `settings.json.bak.1`, `.bak.2`, ... An earlier backup may be the
+    /// user's only good copy, so a new quarantine never replaces one.
+    pub(crate) fn available_backup_path(path: &std::path::Path) -> Option<PathBuf> {
+        let base = Self::backup_path(path);
+        let unused = |candidate: &std::path::Path| {
+            matches!(
+                std::fs::symlink_metadata(candidate),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound
+            )
+        };
+        if unused(&base) {
+            return Some(base);
+        }
+        let mut name = base.clone().into_os_string();
+        name.push(".");
+        (1..=MAX_SETTINGS_BACKUPS)
+            .map(|index| {
+                let mut candidate = name.clone();
+                candidate.push(index.to_string());
+                PathBuf::from(candidate)
+            })
+            .find(|candidate| unused(candidate))
+    }
+
     /// Load settings from disk
     pub fn load() -> Self {
-        let (settings, pending_quarantine) = Self::load_from_disk(false);
-        if !pending_quarantine
+        let (settings, state) = Self::load_from_disk(false);
+        if state == ReadState::Clean
             && !settings.has_legacy_credentials()
             && !settings.needs_personal_gemini_migration()
         {
@@ -902,7 +955,7 @@ impl Settings {
         // credentials, and SBS-954/SBS-1074's quarantine rename is a write too.
         // Re-read after taking the lock so those writes cannot move a
         // concurrent try_update repair to settings.json.bak (SBS-1029).
-        match crate::secure_file::with_state_write_lock(|| Ok(Self::load_unlocked())) {
+        match crate::secure_file::with_state_write_lock(|| Ok(Self::load_unlocked().0)) {
             Ok(settings) => settings,
             Err(error) => {
                 tracing::warn!(%error, "Failed to lock settings load that may write");
@@ -912,14 +965,22 @@ impl Settings {
     }
 
     /// Load and migrate settings while the caller holds the state write lock.
-    fn load_unlocked() -> Self {
-        let (settings, _) = Self::load_from_disk(true);
+    ///
+    /// When the live file was undecodable and could not be moved aside, the
+    /// returned defaults are not saved: migrations would overwrite the only
+    /// copy of the user's file.
+    fn load_unlocked() -> (Self, ReadState) {
+        let (settings, state) = Self::load_from_disk(true);
+        if state == ReadState::QuarantineFailed {
+            return (settings, state);
+        }
         let migrate_personal_gemini = settings.needs_personal_gemini_migration();
-        settings.apply_load_migrations(
+        let settings = settings.apply_load_migrations(
             migrate_personal_gemini,
             Self::migrate_legacy_credentials,
             Self::write_to_disk,
-        )
+        );
+        (settings, state)
     }
 
     /// Run the migrations that can write `settings.json` during a load.
@@ -1026,16 +1087,15 @@ impl Settings {
     }
 
     /// Read `settings.json`. `allow_quarantine` is the rename from SBS-954 /
-    /// SBS-1074; only the locked path may set it. The second value is `true`
-    /// when the file existed, could not be parsed or read, and was left in
-    /// place so `load` can retry under the state lock (SBS-1029).
-    fn load_from_disk(allow_quarantine: bool) -> (Self, bool) {
-        let mut pending_quarantine = false;
+    /// SBS-1074; only the locked path may set it. See [`ReadState`] for the
+    /// second value.
+    fn load_from_disk(allow_quarantine: bool) -> (Self, ReadState) {
+        let mut read_state = ReadState::Clean;
         #[allow(unused_mut)]
         let mut settings = match Self::settings_path() {
             Some(path) if path.exists() => {
-                let (settings, pending) = Self::read_path(&path, allow_quarantine);
-                pending_quarantine = pending;
+                let (settings, state) = Self::read_path(&path, allow_quarantine);
+                read_state = state;
                 settings
             }
             _ => Self::default(),
@@ -1048,22 +1108,40 @@ impl Settings {
             settings.start_at_login = Self::sync_start_at_login_registry();
         }
 
-        (settings, pending_quarantine)
+        (settings, read_state)
     }
 
-    fn read_path(path: &std::path::Path, allow_quarantine: bool) -> (Self, bool) {
+    fn read_path(path: &std::path::Path, allow_quarantine: bool) -> (Self, ReadState) {
+        Self::read_path_with(path, allow_quarantine, fs_rename)
+    }
+
+    fn read_path_with(
+        path: &std::path::Path,
+        allow_quarantine: bool,
+        rename: RenameFn,
+    ) -> (Self, ReadState) {
         match crate::secure_file::read_string(path) {
             Ok(content) => match Self::parse_settings_json(&content) {
-                Ok(settings) => (settings, false),
-                Err(error) => {
-                    Self::handle_undecodable(path, allow_quarantine, &error, "could not be parsed")
-                }
+                Ok(settings) => (settings, ReadState::Clean),
+                Err(error) => Self::handle_undecodable(
+                    path,
+                    allow_quarantine,
+                    &error,
+                    "could not be parsed",
+                    rename,
+                ),
             },
             Err(error) => {
                 // DPAPI unprotect, an unsupported ProtectedFile version, or IO
                 // on an existing file. Mapping these to defaults with no `.bak`
                 // lets try_update overwrite the live undecodable bytes (SBS-1074).
-                Self::handle_undecodable(path, allow_quarantine, &error, "could not be read")
+                Self::handle_undecodable(
+                    path,
+                    allow_quarantine,
+                    &error,
+                    "could not be read",
+                    rename,
+                )
             }
         }
     }
@@ -1073,12 +1151,15 @@ impl Settings {
         allow_quarantine: bool,
         error: &impl std::fmt::Display,
         because: &'static str,
-    ) -> (Self, bool) {
-        if allow_quarantine {
-            Self::quarantine_live_file(path, error, because);
-            (Self::default(), false)
+        rename: RenameFn,
+    ) -> (Self, ReadState) {
+        if !allow_quarantine {
+            return (Self::default(), ReadState::PendingQuarantine);
+        }
+        if Self::quarantine_live_file(path, error, because, rename) {
+            (Self::default(), ReadState::Clean)
         } else {
-            (Self::default(), true)
+            (Self::default(), ReadState::QuarantineFailed)
         }
     }
 
@@ -1095,30 +1176,67 @@ impl Settings {
         match Self::parse_settings_json(content) {
             Ok(settings) => settings,
             Err(error) => {
-                Self::quarantine_live_file(path, &error, "could not be parsed");
+                Self::quarantine_live_file(path, &error, "could not be parsed", fs_rename);
                 Self::default()
             }
         }
     }
 
+    /// Move the undecodable live file to an unused backup path. Returns
+    /// `false` when it is still at `path`; callers must then not write there.
     fn quarantine_live_file(
         path: &std::path::Path,
         error: &impl std::fmt::Display,
         because: &'static str,
-    ) {
-        let backup = Self::backup_path(path);
-        match std::fs::rename(path, &backup) {
-            Ok(()) => tracing::warn!(
+        rename: RenameFn,
+    ) -> bool {
+        let Some(backup) = Self::available_backup_path(path) else {
+            tracing::error!(
                 error = %error,
-                backup = %backup.display(),
-                "settings.json {because}; original moved aside and defaults loaded"
-            ),
-            Err(rename_error) => tracing::warn!(
-                error = %error,
-                %rename_error,
-                "settings.json {because}; falling back to defaults without a backup"
-            ),
+                "settings.json {because}; every backup name is taken, leaving it in place"
+            );
+            return false;
+        };
+        match rename(path, &backup) {
+            Ok(()) => {
+                tracing::warn!(
+                    error = %error,
+                    backup = %backup.display(),
+                    "settings.json {because}; original moved aside and defaults loaded"
+                );
+                true
+            }
+            Err(rename_error) => {
+                tracing::error!(
+                    error = %error,
+                    %rename_error,
+                    "settings.json {because} and could not be moved aside; \
+                     using defaults without saving over it"
+                );
+                false
+            }
         }
+    }
+
+    /// Refuse to replace a live file that cannot be decoded unless it can
+    /// first be moved aside. A caller holding defaults from an earlier failed
+    /// quarantine would otherwise overwrite the user's only copy.
+    fn ensure_live_file_replaceable(
+        path: &std::path::Path,
+        rename: RenameFn,
+    ) -> anyhow::Result<()> {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+        let (_, state) = Self::read_path_with(path, true, rename);
+        if state == ReadState::QuarantineFailed {
+            anyhow::bail!(
+                "settings.json could not be read and could not be moved aside; refusing to overwrite it"
+            );
+        }
+        Ok(())
     }
 
     /// Save settings to disk
@@ -1146,9 +1264,17 @@ impl Settings {
             std::fs::create_dir_all(parent)?;
         }
 
-        let json = serde_json::to_string_pretty(settings)?;
-        crate::secure_file::write_string(&path, &json)?;
+        Self::write_to_path(&path, settings, fs_rename)
+    }
 
+    fn write_to_path(
+        path: &std::path::Path,
+        settings: &Self,
+        rename: RenameFn,
+    ) -> anyhow::Result<()> {
+        let json = serde_json::to_string_pretty(settings)?;
+        Self::ensure_live_file_replaceable(path, rename)?;
+        crate::secure_file::write_string(path, &json)?;
         Ok(())
     }
 

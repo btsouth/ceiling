@@ -386,7 +386,7 @@ impl LocalAgentSessionScanner {
                 "-Command".to_string(),
                 concat!(
                     "$ErrorActionPreference='Stop';",
-                    "$processes=@(Get-CimInstance Win32_Process | ",
+                    "$processes=@(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CreationDate,Name,ExecutablePath | ",
                     "Select-Object ProcessId,ParentProcessId,CreationDate,Name,ExecutablePath);",
                     "ConvertTo-Json -Compress -InputObject $processes"
                 )

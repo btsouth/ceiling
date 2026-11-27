@@ -13,9 +13,6 @@ use reqwest::Client;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
-
 use crate::core::{
     FetchContext, Provider, ProviderError, ProviderFetchResult, ProviderId, ProviderMetadata,
     RateWindow, SourceMode, UsageSnapshot,
@@ -142,12 +139,7 @@ impl GrokProvider {
             .clone()
             .filter(|s| !s.is_empty())
             .ok_or(ProviderError::AuthRequired)?;
-        let token_url = current
-            .oidc_issuer
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .map(|issuer| format!("{}/oauth2/token", issuer.trim_end_matches('/')))
-            .unwrap_or_else(|| "https://auth.x.ai/oauth2/token".to_string());
+        let token_url = grok_token_url(current.oidc_issuer.as_deref())?;
 
         let response = self
             .client
@@ -193,15 +185,35 @@ impl GrokProvider {
             .filter(|v| *v > 0)
             .unwrap_or(21_600);
         let expires_at = Some(Utc::now() + chrono::Duration::seconds(ttl));
+        let exchanged_refresh = refresh_token.to_string();
         let mut next = current;
         next.access_token = access_token;
         next.rotated_refresh_token = issued_refresh.clone();
         next.refresh_token = issued_refresh.or(next.refresh_token);
         next.expires_at = expires_at;
-        if let Err(err) = next.persist_to_disk() {
-            tracing::warn!("Grok token refreshed but could not persist auth.json: {err}");
+        match next.persist_to_disk(&exchanged_refresh) {
+            Ok(GrokPersistOutcome::Written) => Ok(next),
+            Ok(GrokPersistOutcome::AuthFileMissing) => {
+                // The user ran `grok logout` while the refresh was in flight.
+                // Do not recreate auth.json or keep using the new session.
+                tracing::debug!(
+                    "Grok auth.json disappeared during refresh; treating as signed out"
+                );
+                Err(ProviderError::AuthRequired)
+            }
+            Ok(GrokPersistOutcome::Rotated(live)) => {
+                tracing::debug!("Another process refreshed this Grok seat first; using its tokens");
+                if live.access_token.is_empty() {
+                    Err(ProviderError::AuthRequired)
+                } else {
+                    Ok(*live)
+                }
+            }
+            Err(err) => {
+                tracing::warn!("Grok token refreshed but could not persist auth.json: {err}");
+                Ok(next)
+            }
         }
-        Ok(next)
     }
 
     async fn fetch_with_auth(
@@ -426,8 +438,10 @@ impl GrokProvider {
         for bin in candidates {
             let mut command = std::process::Command::new(&bin);
             command.arg("--version");
-            hide_windows_console(&mut command);
-            let Ok(output) = command.output() else {
+            let Some(output) = crate::providers::cli_probe::output_with_timeout(
+                &mut command,
+                crate::providers::cli_probe::PROBE_TIMEOUT,
+            ) else {
                 continue;
             };
             let text = String::from_utf8_lossy(&output.stdout);
@@ -446,6 +460,43 @@ impl GrokProvider {
     }
 }
 
+/// OIDC issuers Ceiling will send a Grok refresh token to.
+const ALLOWED_OIDC_ISSUER_HOSTS: &[&str] = &["auth.x.ai", "accounts.x.ai"];
+const DEFAULT_TOKEN_URL: &str = "https://auth.x.ai/oauth2/token";
+
+/// Token endpoint for the `oidc_issuer` recorded in `auth.json`.
+///
+/// The refresh token is a long-lived credential, so it only goes to an HTTPS
+/// x.ai issuer with no userinfo, port, query or fragment. A tampered or
+/// unexpected issuer fails instead of leaking the token elsewhere.
+fn grok_token_url(issuer: Option<&str>) -> Result<String, ProviderError> {
+    let Some(issuer) = issuer.map(str::trim).filter(|issuer| !issuer.is_empty()) else {
+        return Ok(DEFAULT_TOKEN_URL.to_string());
+    };
+    let rejected = || {
+        ProviderError::OAuth(
+            "Grok auth.json names an unexpected sign-in issuer. Run `grok login` again."
+                .to_string(),
+        )
+    };
+    let url = reqwest::Url::parse(issuer).map_err(|_| rejected())?;
+    let host = url.host_str().map(str::to_ascii_lowercase);
+    let allowed = url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && matches!(url.path(), "" | "/")
+        && host
+            .as_deref()
+            .is_some_and(|host| ALLOWED_OIDC_ISSUER_HOSTS.contains(&host));
+    if !allowed {
+        return Err(rejected());
+    }
+    Ok(format!("https://{}/oauth2/token", host.unwrap_or_default()))
+}
+
 /// Minimal form-encoding for OAuth refresh (tokens are base64url-safe).
 fn urlencoding_form(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
@@ -459,15 +510,6 @@ fn urlencoding_form(value: &str) -> String {
     }
     out
 }
-
-#[cfg(windows)]
-fn hide_windows_console(command: &mut std::process::Command) {
-    const CREATE_NO_WINDOW: u32 = 0x08000000;
-    command.creation_flags(CREATE_NO_WINDOW);
-}
-
-#[cfg(not(windows))]
-fn hide_windows_console(_command: &mut std::process::Command) {}
 
 impl Default for GrokProvider {
     fn default() -> Self {
@@ -595,23 +637,58 @@ impl GrokCredentials {
         }
     }
 
-    fn persist_to_disk(&self) -> Result<(), String> {
+    fn persist_to_disk(&self, exchanged_refresh_token: &str) -> Result<GrokPersistOutcome, String> {
         let path = GrokProvider::auth_file_path().ok_or_else(|| "no auth path".to_string())?;
-        self.persist_to_path(&path)
+        self.persist_to_path(&path, exchanged_refresh_token)
     }
 
-    fn persist_to_path(&self, path: &Path) -> Result<(), String> {
+    /// Write refreshed tokens back to `auth.json`.
+    ///
+    /// `exchanged_refresh_token` is the token this process sent to x.ai. It is
+    /// a compare-and-swap guard: when the file now holds a different refresh
+    /// token, another process (usually the Grok CLI) rotated the seat first,
+    /// so its live tokens are returned instead of being clobbered. A missing
+    /// file means the user signed out and is never recreated.
+    fn persist_to_path(
+        &self,
+        path: &Path,
+        exchanged_refresh_token: &str,
+    ) -> Result<GrokPersistOutcome, String> {
+        // Check before taking the lock: the lock helper creates the parent
+        // directory, which would partly resurrect a removed ~/.grok.
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(GrokPersistOutcome::AuthFileMissing);
+            }
+            Err(error) => return Err(format!("update auth.json: {error}")),
+        }
         crate::secure_file::with_file_write_lock(path, || {
-            let mut root = match std::fs::read_to_string(path) {
-                Ok(text) => serde_json::from_str(&text)
-                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::json!({}),
+            let text = match std::fs::read_to_string(path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(GrokPersistOutcome::AuthFileMissing);
+                }
                 Err(error) => return Err(error),
             };
+            let mut root: Value = serde_json::from_str(&text)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+            if root.as_object().is_some_and(|map| map.is_empty()) {
+                return Ok(GrokPersistOutcome::AuthFileMissing);
+            }
+            if let Some(disk_refresh) = disk_refresh_token(&root, &self.scope)
+                && disk_refresh != exchanged_refresh_token.trim()
+            {
+                let live = GrokCredentials::parse(&text).map_err(|error| {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
+                })?;
+                return Ok(GrokPersistOutcome::Rotated(Box::new(live)));
+            }
             apply_refresh_to_auth_json(&mut root, self)
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
             let encoded = serde_json::to_vec_pretty(&root).map_err(std::io::Error::other)?;
-            crate::secure_file::atomic_write_preserving_permissions(path, &encoded)
+            crate::secure_file::atomic_write_preserving_permissions(path, &encoded)?;
+            Ok(GrokPersistOutcome::Written)
         })
         .map_err(|error| format!("update auth.json: {error}"))
     }
@@ -625,6 +702,25 @@ impl GrokCredentials {
             None => None,
         }
     }
+}
+
+/// What happened when refreshed Grok tokens were written back.
+#[derive(Debug)]
+enum GrokPersistOutcome {
+    Written,
+    /// `auth.json` is gone (signed out); nothing was written.
+    AuthFileMissing,
+    /// Another process rotated the refresh token first; these are its tokens.
+    Rotated(Box<GrokCredentials>),
+}
+
+/// The usable refresh token stored for `scope`, if any.
+fn disk_refresh_token<'a>(root: &'a Value, scope: &str) -> Option<&'a str> {
+    root.get(scope)?
+        .get("refresh_token")?
+        .as_str()
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
 }
 
 /// Usable `auth.json` seats. Top-level non-objects (`active`, `future_root`, …)
@@ -1307,7 +1403,7 @@ mod tests {
         .expect("seed auth file");
 
         refreshed_credentials("new-access")
-            .persist_to_path(&path)
+            .persist_to_path(&path, "old-refresh")
             .expect("persist refresh");
 
         let stored: Value =
@@ -1347,7 +1443,7 @@ mod tests {
                 std::thread::spawn(move || {
                     barrier.wait();
                     refreshed_credentials(access_token)
-                        .persist_to_path(&path)
+                        .persist_to_path(&path, "refresh-exchanged")
                         .expect("persist concurrent refresh");
                 })
             })
@@ -1378,38 +1474,66 @@ mod tests {
 
         assert!(
             refreshed_credentials("new-access")
-                .persist_to_path(&path)
+                .persist_to_path(&path, "refresh-new-access")
                 .is_err()
         );
         assert_eq!(std::fs::read(&path).expect("read original"), original);
     }
 
     #[test]
-    fn persist_leaves_newer_disk_refresh_token() {
+    fn persist_adopts_live_tokens_when_another_process_rotated_the_refresh() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("auth.json");
+        let original = r#"{
+                "https://auth.x.ai::test": {
+                    "key": "cli-access",
+                    "refresh_token": "newer-disk-refresh"
+                }
+            }"#;
+        std::fs::write(&path, original).expect("seed auth file");
+
+        let outcome = refreshed_credentials("new-access")
+            .persist_to_path(&path, "stale-exchanged-refresh")
+            .expect("persist refresh");
+
+        match outcome {
+            GrokPersistOutcome::Rotated(live) => {
+                assert_eq!(live.access_token, "cli-access");
+                assert_eq!(live.refresh_token.as_deref(), Some("newer-disk-refresh"));
+            }
+            other => panic!("expected the live rotated seat, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read original"),
+            original,
+            "a rotated seat must not be clobbered"
+        );
+    }
+
+    #[test]
+    fn persist_writes_when_the_exchanged_refresh_is_still_on_disk() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("auth.json");
         std::fs::write(
             &path,
-            r#"{
-                "https://auth.x.ai::test": {
-                    "key": "old",
-                    "refresh_token": "newer-disk-refresh"
-                }
-            }"#,
+            r#"{"https://auth.x.ai::test":{"key":"old","refresh_token":"exchanged"}}"#,
         )
         .expect("seed auth file");
 
         let mut credentials = refreshed_credentials("new-access");
-        credentials.refresh_token = Some("stale-struct-refresh".to_string());
-        credentials.persist_to_path(&path).expect("persist refresh");
+        credentials.rotated_refresh_token = Some("rotated".to_string());
+        let outcome = credentials
+            .persist_to_path(&path, "exchanged")
+            .expect("persist refresh");
 
+        assert!(matches!(outcome, GrokPersistOutcome::Written));
         let stored: Value =
             serde_json::from_str(&std::fs::read_to_string(&path).expect("read result"))
                 .expect("valid result");
         assert_eq!(stored["https://auth.x.ai::test"]["key"], "new-access");
         assert_eq!(
             stored["https://auth.x.ai::test"]["refresh_token"],
-            "newer-disk-refresh"
+            "rotated"
         );
     }
 
@@ -1425,7 +1549,7 @@ mod tests {
         ] {
             std::fs::write(&path, seed).expect("seed unusable refresh token");
             refreshed_credentials("new-access")
-                .persist_to_path(&path)
+                .persist_to_path(&path, "refresh-new-access")
                 .expect("repair refresh token");
             let stored: Value =
                 serde_json::from_str(&std::fs::read_to_string(&path).expect("read result"))
@@ -1449,7 +1573,7 @@ mod tests {
 
         assert!(
             refreshed_credentials("new-access")
-                .persist_to_path(&path)
+                .persist_to_path(&path, "refresh-new-access")
                 .is_err()
         );
 
@@ -1462,25 +1586,81 @@ mod tests {
     }
 
     #[test]
-    fn persist_creates_auth_file_when_missing() {
+    fn persist_does_not_recreate_auth_file_after_logout() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("auth.json");
 
-        refreshed_credentials("new-access")
-            .persist_to_path(&path)
-            .expect("persist refresh into a missing file");
+        let outcome = refreshed_credentials("new-access")
+            .persist_to_path(&path, "refresh-new-access")
+            .expect("a missing auth file is not an error");
 
-        let stored: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("read result"))
-                .expect("valid result");
-        let entry = &stored["https://auth.x.ai::test"];
-        assert_eq!(entry["key"], "new-access");
-        assert_eq!(entry["refresh_token"], "refresh-new-access");
-        assert_eq!(entry["auth_mode"], "oidc");
-        assert_eq!(entry["email"], "user@example.com");
-        assert_eq!(entry["team_id"], "team");
-        assert_eq!(entry["oidc_issuer"], "https://auth.x.ai");
-        assert_eq!(entry["oidc_client_id"], "client");
+        assert!(matches!(outcome, GrokPersistOutcome::AuthFileMissing));
+        assert!(!path.exists(), "logout must not be undone by a refresh");
+    }
+
+    #[test]
+    fn persist_does_not_recreate_a_removed_grok_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let grok_home = dir.path().join(".grok");
+        let path = grok_home.join("auth.json");
+
+        let outcome = refreshed_credentials("new-access")
+            .persist_to_path(&path, "refresh-new-access")
+            .expect("a missing auth directory is not an error");
+
+        assert!(matches!(outcome, GrokPersistOutcome::AuthFileMissing));
+        assert!(!grok_home.exists());
+    }
+
+    #[test]
+    fn token_url_defaults_to_xai_when_issuer_is_absent() {
+        assert_eq!(
+            grok_token_url(None).unwrap(),
+            "https://auth.x.ai/oauth2/token"
+        );
+        assert_eq!(
+            grok_token_url(Some("  ")).unwrap(),
+            "https://auth.x.ai/oauth2/token"
+        );
+    }
+
+    #[test]
+    fn token_url_accepts_allowlisted_https_issuers() {
+        assert_eq!(
+            grok_token_url(Some("https://auth.x.ai")).unwrap(),
+            "https://auth.x.ai/oauth2/token"
+        );
+        assert_eq!(
+            grok_token_url(Some("https://auth.x.ai/")).unwrap(),
+            "https://auth.x.ai/oauth2/token"
+        );
+        assert_eq!(
+            grok_token_url(Some("https://ACCOUNTS.x.ai")).unwrap(),
+            "https://accounts.x.ai/oauth2/token"
+        );
+    }
+
+    #[test]
+    fn token_url_rejects_issuers_that_could_leak_the_refresh_token() {
+        for issuer in [
+            "http://auth.x.ai",
+            "https://evil.test",
+            "https://auth.x.ai.evil.test",
+            "https://evilauth.x.ai",
+            "https://auth.x.ai@evil.test",
+            "https://user:example@auth.x.ai",
+            "https://auth.x.ai:8443",
+            "https://auth.x.ai/redirect",
+            "https://auth.x.ai/?next=evil",
+            "https://auth.x.ai/#frag",
+            "auth.x.ai",
+            "not a url",
+        ] {
+            assert!(matches!(
+                grok_token_url(Some(issuer)),
+                Err(ProviderError::OAuth(_))
+            ));
+        }
     }
 
     #[test]

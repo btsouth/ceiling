@@ -3,8 +3,6 @@
 //! Chromium browsers store cookies in an SQLite database encrypted with DPAPI.
 //! Firefox stores cookies in an unencrypted SQLite database.
 
-#![allow(dead_code)]
-
 use std::path::Path;
 
 use aes_gcm::{
@@ -35,9 +33,6 @@ pub enum CookieError {
     #[error("Cookie not found for domain: {0}")]
     NotFound(String),
 
-    #[error("Browser not installed")]
-    BrowserNotInstalled,
-
     #[error("DPAPI error: {0}")]
     Dpapi(String),
 
@@ -59,10 +54,6 @@ pub struct Cookie {
     pub name: String,
     pub value: String,
     pub domain: String,
-    pub path: String,
-    pub expires: Option<i64>,
-    pub is_secure: bool,
-    pub is_http_only: bool,
 }
 
 impl Cookie {
@@ -281,26 +272,21 @@ impl CookieExtractor {
             let conn = Connection::open(temp_db.path())?;
 
             let mut stmt = conn.prepare(
-                "SELECT name, encrypted_value, host_key, path, expires_utc, is_secure, is_httponly
+                "SELECT name, encrypted_value, host_key
                  FROM cookies
                  WHERE host_key LIKE ?1 OR host_key LIKE ?2",
             )?;
 
             let rows = stmt.query_map([&domain_pattern, &dot_domain_pattern], |row| {
                 Ok((
-                    row.get::<_, String>(0)?,   // name
-                    row.get::<_, Vec<u8>>(1)?,  // encrypted_value
-                    row.get::<_, String>(2)?,   // host_key
-                    row.get::<_, String>(3)?,   // path
-                    row.get::<_, i64>(4)?,      // expires_utc
-                    row.get::<_, i32>(5)? != 0, // is_secure
-                    row.get::<_, i32>(6)? != 0, // is_httponly
+                    row.get::<_, String>(0)?,  // name
+                    row.get::<_, Vec<u8>>(1)?, // encrypted_value
+                    row.get::<_, String>(2)?,  // host_key
                 ))
             })?;
 
             for row in rows {
-                let (name, encrypted_value, host_key, path, expires_utc, is_secure, is_http_only) =
-                    row?;
+                let (name, encrypted_value, host_key) = row?;
 
                 if !domain_matches(&host_key, domain) {
                     continue;
@@ -326,14 +312,6 @@ impl CookieExtractor {
                     name,
                     value,
                     domain: host_key,
-                    path,
-                    expires: if expires_utc > 0 {
-                        Some(expires_utc)
-                    } else {
-                        None
-                    },
-                    is_secure,
-                    is_http_only,
                 });
             }
         }
@@ -603,7 +581,7 @@ impl CookieExtractor {
             let conn = Connection::open(temp_db.path())?;
 
             let mut stmt = conn.prepare(
-                "SELECT name, value, host, path, expiry, isSecure, isHttpOnly
+                "SELECT name, value, host
                  FROM moz_cookies
                  WHERE host LIKE ?1 OR host LIKE ?2",
             )?;
@@ -613,10 +591,6 @@ impl CookieExtractor {
                     name: row.get(0)?,
                     value: row.get(1)?,
                     domain: row.get(2)?,
-                    path: row.get(3)?,
-                    expires: row.get(4).ok(),
-                    is_secure: row.get::<_, i32>(5)? != 0,
-                    is_http_only: row.get::<_, i32>(6)? != 0,
                 })
             })?;
 
@@ -676,97 +650,6 @@ fn domain_matches(host_key: &str, domain: &str) -> bool {
     host == domain || host == format!(".{domain}") || host.ends_with(&format!(".{domain}"))
 }
 
-/// Helper to get cookies for a specific domain from any available browser
-pub fn get_cookies_for_domain(domain: &str) -> Result<Vec<Cookie>, CookieError> {
-    use super::detection::BrowserDetector;
-
-    let browsers = BrowserDetector::detect_all();
-
-    if browsers.is_empty() {
-        return Err(CookieError::BrowserNotInstalled);
-    }
-
-    // Track whether any browser raised an App-Bound Encryption error so we can
-    // surface that specific, actionable message if no other browser succeeds.
-    let mut abe_error_seen = false;
-
-    // Try each browser until we find cookies
-    for browser in browsers {
-        match CookieExtractor::extract_for_domain(&browser, domain) {
-            Ok(cookies) if !cookies.is_empty() => {
-                tracing::debug!(
-                    "Found {} cookies for {} in {}",
-                    cookies.len(),
-                    domain,
-                    browser.browser_type.display_name()
-                );
-                return Ok(cookies);
-            }
-            Ok(_) => continue,
-            Err(CookieError::AppBoundEncryption) => {
-                // Chrome ABE is blocking this browser; log a warning and keep
-                // trying Edge / Firefox which are unaffected by ABE.
-                tracing::warn!(
-                    browser = %browser.browser_type.display_name(),
-                    "App-Bound Encryption prevents automatic cookie import; \
-                     trying remaining browsers"
-                );
-                abe_error_seen = true;
-                // Continue to next browser rather than giving up
-            }
-            Err(e) => {
-                tracing::debug!(
-                    "Failed to get cookies from {}: {}",
-                    browser.browser_type.display_name(),
-                    e
-                );
-            }
-        }
-    }
-
-    // Surface a clear ABE error if it was the only kind of failure encountered,
-    // so the UI can show an actionable message instead of a generic "not found".
-    if abe_error_seen {
-        return Err(CookieError::AppBoundEncryption);
-    }
-
-    Err(CookieError::NotFound(domain.to_string()))
-}
-
-/// Get a cookie header string for a domain
-pub fn get_cookie_header(domain: &str) -> Result<String, CookieError> {
-    let cookies = get_cookies_for_domain(domain)?;
-    Ok(CookieExtractor::build_cookie_header(&cookies))
-}
-
-/// Get a cookie header string from the first domain that has readable cookies.
-pub fn get_cookie_header_for_domains(domains: &[&str]) -> Result<String, CookieError> {
-    select_cookie_header_for_domains(domains, get_cookie_header)
-}
-
-fn select_cookie_header_for_domains(
-    domains: &[&str],
-    mut lookup: impl FnMut(&str) -> Result<String, CookieError>,
-) -> Result<String, CookieError> {
-    let mut app_bound_encryption_seen = false;
-    let mut last_error = None;
-
-    for domain in domains {
-        match lookup(domain) {
-            Ok(header) if !header.trim().is_empty() => return Ok(header),
-            Ok(_) => {}
-            Err(CookieError::AppBoundEncryption) => app_bound_encryption_seen = true,
-            Err(error) => last_error = Some(error),
-        }
-    }
-
-    if app_bound_encryption_seen {
-        Err(CookieError::AppBoundEncryption)
-    } else {
-        Err(last_error.unwrap_or_else(|| CookieError::NotFound(domains.join(", "))))
-    }
-}
-
 /// Get a cookie header string for a domain from a specific browser
 pub fn get_cookie_header_from_browser(
     domain: &str,
@@ -810,47 +693,6 @@ mod tests {
     }
 
     #[test]
-    fn multi_domain_lookup_prefers_a_later_readable_cookie_over_abe() {
-        let mut calls = 0;
-        let result = select_cookie_header_for_domains(&["first.test", "second.test"], |_| {
-            calls += 1;
-            if calls == 1 {
-                Err(CookieError::AppBoundEncryption)
-            } else {
-                Ok("session=readable".to_string())
-            }
-        });
-
-        assert_eq!(result.unwrap(), "session=readable");
-        assert_eq!(calls, 2);
-    }
-
-    #[test]
-    fn multi_domain_lookup_keeps_abe_actionable_when_nothing_succeeds() {
-        let error = select_cookie_header_for_domains(&["first.test", "second.test"], |_| {
-            Err(CookieError::AppBoundEncryption)
-        })
-        .unwrap_err();
-        assert!(matches!(error, CookieError::AppBoundEncryption));
-    }
-
-    #[test]
-    fn multi_domain_lookup_preserves_not_found_without_abe() {
-        let mut calls = 0;
-        let error = select_cookie_header_for_domains(&["first.test", "second.test"], |_| {
-            calls += 1;
-            if calls == 1 {
-                Ok("  ".to_string())
-            } else {
-                Err(CookieError::NotFound("second.test".to_string()))
-            }
-        })
-        .unwrap_err();
-
-        assert!(matches!(error, CookieError::NotFound(domain) if domain == "second.test"));
-    }
-
-    #[test]
     fn temporary_cookie_database_is_removed_on_drop() {
         let source_path = std::env::temp_dir().join(format!(
             "ceiling_cookie_source_{}.sqlite",
@@ -878,26 +720,6 @@ mod tests {
         assert!(domain_matches("AUTH.CHATGPT.COM.", "chatgpt.com"));
         assert!(!domain_matches("evilchatgpt.com", "chatgpt.com"));
         assert!(!domain_matches("chatgpt.com.evil.test", "chatgpt.com"));
-    }
-
-    #[test]
-    fn test_cookie_extraction() {
-        // This test will only work on a machine with Chrome installed
-        match get_cookies_for_domain("claude.ai") {
-            Ok(cookies) => {
-                println!("Found {} cookies for claude.ai", cookies.len());
-                for cookie in &cookies {
-                    println!(
-                        "  {}={}",
-                        cookie.name,
-                        &cookie.value[..20.min(cookie.value.len())]
-                    );
-                }
-            }
-            Err(e) => {
-                println!("Could not get cookies: {}", e);
-            }
-        }
     }
 
     /// Verify that the ABE error variant formats a readable, actionable message.

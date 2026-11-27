@@ -147,17 +147,24 @@ type ProviderCacheKey = (String, Option<String>);
 
 /// The set of readings a refresh cycle will (or did) produce.
 ///
-/// Empty targets means a single ambient fetch with `account_id = None`.
+/// Empty targets means a single fetch stamped with the active token
+/// account's id, or `account_id = None` when no token account is active.
 /// Configured directories each produce one reading stamped with their id.
 pub(crate) fn expected_cache_keys(
     enabled_ids: &[ProviderId],
+    settings: &Settings,
+    api_keys: &ApiKeys,
     account_dirs: &ConfiguredAccounts,
+    token_accounts: &HashMap<ProviderId, ProviderAccountData>,
 ) -> HashSet<ProviderCacheKey> {
     let mut keys = HashSet::new();
     for id in enabled_ids {
         let targets = account_dirs.targets_for(*id);
         if targets.is_empty() {
-            keys.insert((id.cli_name().to_string(), None));
+            keys.insert((
+                id.cli_name().to_string(),
+                active_token_account_id(*id, settings, api_keys, token_accounts),
+            ));
         } else {
             for target in targets {
                 keys.insert((id.cli_name().to_string(), Some(target.id)));
@@ -224,7 +231,13 @@ async fn do_refresh_providers_with_policy(
     // Without this, ambient (`account_id = None`) rows survive next to the
     // registered UUID reading once Accounts auto-registers the signed-in
     // directory — two identical cards for one account (issue #155).
-    let expected = expected_cache_keys(&inputs.enabled_ids, &inputs.account_dirs);
+    let expected = expected_cache_keys(
+        &inputs.enabled_ids,
+        &inputs.settings,
+        &inputs.api_keys,
+        &inputs.account_dirs,
+        &inputs.token_accounts,
+    );
     if let Ok(mut guard) = state.lock() {
         prune_stale_provider_readings(&mut guard.provider_cache, &expected, &inputs.enabled_ids);
     }
@@ -329,7 +342,17 @@ fn spawn_provider_refreshes(
         // One fetch per configured account, so several accounts on one provider
         // are read side by side rather than replacing each other. With none
         // configured this is a single ambient fetch, exactly as before.
-        let fetches = account_fetches(id, base_ctx, &inputs.account_dirs);
+        let fetches = account_fetches(
+            id,
+            base_ctx,
+            &inputs.account_dirs,
+            active_token_account_id(
+                id,
+                &inputs.settings,
+                &inputs.api_keys,
+                &inputs.token_accounts,
+            ),
+        );
 
         for (ctx, account) in fetches {
             let app_handle = app.clone();
@@ -346,7 +369,35 @@ fn spawn_provider_refreshes(
     handles
 }
 
-/// One fetch context per configured account, or a single ambient fetch.
+/// The active token account's id for a provider, as a cache/history scope.
+///
+/// Only stamps the token account's id when that account's credentials actually
+/// participate in `build_fetch_context` (env/API key override not shadowed by
+/// a stored API key, or cookie override when cookie mode is enabled). When a
+/// provider has a saved token account that is ignored (for example Claude with
+/// `cookie_source = "off"` reading the ambient CLI OAuth seat), the reading
+/// stays ambient (`None`) so it is never mislabeled as the token account.
+pub(crate) fn active_token_account_id(
+    id: ProviderId,
+    settings: &Settings,
+    api_keys: &ApiKeys,
+    token_accounts: &HashMap<ProviderId, ProviderAccountData>,
+) -> Option<String> {
+    let account = token_accounts
+        .get(&id)
+        .and_then(ProviderAccountData::active_account)?;
+    let override_data = TokenAccountOverride::from_account(id, account.clone());
+    let has_stored_api_key = api_keys.get(id.cli_name()).is_some();
+    let uses_env = override_data.env_override.is_some() && !has_stored_api_key;
+    let cookie_source = settings.cookie_source(id);
+    let uses_cookie = id.cookie_domain().is_some()
+        && override_data.cookie_header.is_some()
+        && matches!(cookie_source, "manual" | "auto" | "browser" | "web");
+    (uses_env || uses_cookie).then(|| account.id.to_string())
+}
+
+/// One fetch context per configured account, or a single fetch for the
+/// active token account (or the ambient CLI sign-in when there is none).
 ///
 /// Claude directory accounts drop the global session cookie/key here so Web
 /// mode cannot paint every card from one `sessionKey` (SBS-1034 / SBS-695).
@@ -354,10 +405,15 @@ pub(crate) fn account_fetches(
     id: ProviderId,
     base_ctx: FetchContext,
     account_dirs: &ConfiguredAccounts,
+    token_account_id: Option<String>,
 ) -> Vec<(FetchContext, AccountBadge)> {
     let targets = account_dirs.targets_for(id);
     if targets.is_empty() {
-        return vec![(base_ctx, AccountBadge::default())];
+        let badge = AccountBadge {
+            id: token_account_id,
+            ..AccountBadge::default()
+        };
+        return vec![(base_ctx, badge)];
     }
     targets
         .into_iter()
@@ -380,7 +436,8 @@ pub(crate) fn account_fetches(
 /// The active account's display identity, attached to each reading.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct AccountBadge {
-    /// Stable account id; `None` while following the CLI.
+    /// Stable account id: the directory account, else the active token
+    /// account; `None` while following the CLI.
     pub id: Option<String>,
     pub label: Option<String>,
     pub tint: Option<String>,
@@ -1097,18 +1154,22 @@ fn notify_predictive_pace(
     // Directory seats already stamp `account_id`; threshold toasts key on it.
     // A provider-global token account is only a fallback when no seat is
     // present — using it first made same-email seats share one pace key.
+    let active_token_account = token_accounts
+        .get(&provider)
+        .and_then(ProviderAccountData::active_account)
+        .map(|account| account.id);
+    // A reading stamped with the active token account's id is not a
+    // directory seat; keep its `token-account:` pace key.
     let directory_account_id = snapshot
         .account_id
         .as_deref()
         .map(str::trim)
-        .filter(|id| !id.is_empty());
+        .filter(|id| !id.is_empty())
+        .filter(|id| active_token_account.is_none_or(|token| *id != token.to_string()));
     let token_account_id = if directory_account_id.is_some() {
         None
     } else {
-        token_accounts
-            .get(&provider)
-            .and_then(ProviderAccountData::active_account)
-            .map(|account| account.id)
+        active_token_account
     };
     let Some(identity) = predictive_warning_identity(
         &snapshot.source_label,

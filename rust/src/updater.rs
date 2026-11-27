@@ -255,8 +255,15 @@ fn select_release_target(release: &GitHubRelease) -> Option<UpdateInfo> {
     })
 }
 
+/// GitHub-delivered installer the self-updater may download and run. The
+/// `-Store-Setup.exe` asset is the Microsoft Store bundle (300+ MiB), not an
+/// update for a GitHub install, so it never qualifies even when GitHub lists
+/// it first.
 fn is_installer_asset_name(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
+    if lower.ends_with("-store-setup.exe") {
+        return false;
+    }
     lower.ends_with("-setup.exe") || lower.ends_with(".msi")
 }
 
@@ -270,11 +277,31 @@ fn parse_version_triplet(v: &str) -> (u32, u32, u32) {
 }
 
 fn installer_version_from_name(name: &str) -> Option<(u32, u32, u32)> {
+    // Keep pending-install detection in step with release selection: a cached
+    // Store bundle is never an update to apply.
+    if !is_installer_asset_name(name) {
+        return None;
+    }
     let lower = name.to_ascii_lowercase();
     let stem = lower
         .strip_suffix("-setup.exe")
         .or_else(|| lower.strip_suffix(".msi"))?;
+    parse_installer_stem_version(stem)
+}
 
+/// Like [`installer_version_from_name`], but also recognizes cached Microsoft
+/// Store bundles (`*-Store-Setup.exe`) so [`prune_superseded_downloads`] can
+/// reclaim superseded 300+ MiB bundles without ever selecting them to apply.
+fn prunable_installer_version_from_name(name: &str) -> Option<(u32, u32, u32)> {
+    if let Some(version) = installer_version_from_name(name) {
+        return Some(version);
+    }
+    let lower = name.to_ascii_lowercase();
+    let stem = lower.strip_suffix("-store-setup.exe")?;
+    parse_installer_stem_version(stem)
+}
+
+fn parse_installer_stem_version(stem: &str) -> Option<(u32, u32, u32)> {
     let version_candidate = stem.split_once('-').map(|(_, rest)| rest).unwrap_or(stem);
     let version_text: String = version_candidate
         .chars()
@@ -932,7 +959,7 @@ pub fn prune_superseded_downloads() {
         let Some(version) = path
             .file_name()
             .and_then(|name| name.to_str())
-            .and_then(installer_version_from_name)
+            .and_then(prunable_installer_version_from_name)
         else {
             continue;
         };
@@ -1039,6 +1066,22 @@ mod tests {
         assert!(
             far_future > current,
             "a genuinely newer installer must survive pruning"
+        );
+
+        // Superseded Store bundles are never selectable as pending updates,
+        // but pruning still recognizes their version so old 300+ MiB bundles
+        // can be reclaimed.
+        assert_eq!(
+            installer_version_from_name("Ceiling-1.5.50-Store-Setup.exe"),
+            None
+        );
+        assert_eq!(
+            prunable_installer_version_from_name("Ceiling-1.5.50-Store-Setup.exe"),
+            Some((1, 5, 50))
+        );
+        assert_eq!(
+            prunable_installer_version_from_name("Ceiling-99.0.0-Store-Setup.exe"),
+            Some((99, 0, 0))
         );
     }
 
@@ -1214,6 +1257,71 @@ mod tests {
         );
         assert!(!without_hash.supports_auto_download());
         assert!(validate_auto_download(&without_hash).is_err());
+    }
+
+    fn asset(name: &str) -> GitHubAsset {
+        GitHubAsset {
+            name: name.to_string(),
+            browser_download_url: format!("https://example.com/{name}"),
+            digest: None,
+        }
+    }
+
+    fn release_with_assets(assets: Vec<GitHubAsset>) -> GitHubRelease {
+        GitHubRelease {
+            tag_name: "v1.5.52".to_string(),
+            html_url: "https://github.com/btsouth/ceiling/releases/tag/v1.5.52".to_string(),
+            body: None,
+            assets,
+            draft: false,
+            prerelease: false,
+        }
+    }
+
+    #[test]
+    fn store_bundle_listed_first_is_skipped_for_the_github_installer() {
+        let release = release_with_assets(vec![
+            asset("Ceiling-1.5.52-Store-Setup.exe"),
+            asset("Ceiling-1.5.52-Setup.exe"),
+        ]);
+
+        let update = select_release_target(&release).expect("update target");
+
+        assert_eq!(update.delivery, UpdateDelivery::Installer);
+        assert_eq!(
+            update.download_url,
+            "https://example.com/Ceiling-1.5.52-Setup.exe"
+        );
+    }
+
+    #[test]
+    fn store_bundle_alone_falls_back_to_manual_release() {
+        let release = release_with_assets(vec![asset("Ceiling-1.5.52-Store-Setup.exe")]);
+
+        let update = select_release_target(&release).expect("update target");
+
+        assert_eq!(update.delivery, UpdateDelivery::Manual);
+        assert_eq!(
+            update.download_url,
+            "https://github.com/btsouth/ceiling/releases/tag/v1.5.52"
+        );
+        assert!(!update.supports_auto_apply());
+    }
+
+    #[test]
+    fn store_bundle_is_never_an_installer_or_pending_update() {
+        for name in [
+            "Ceiling-1.5.52-Store-Setup.exe",
+            "ceiling-99.0.0-store-setup.exe",
+        ] {
+            assert!(!is_installer_asset_name(name), "{name}");
+            assert_eq!(installer_version_from_name(name), None, "{name}");
+        }
+        assert!(is_installer_asset_name("Ceiling-1.5.52-Setup.exe"));
+        assert_eq!(
+            installer_version_from_name("Ceiling-1.5.52-Setup.exe"),
+            Some((1, 5, 52))
+        );
     }
 
     #[test]

@@ -322,12 +322,21 @@ try {
         }
     }
     $commandLine = "pnpm " + ($quotedArgs -join " ")
+    # A cached exe from an earlier build must never pass for this one, so
+    # clear it before building; its existence afterwards proves this build wrote it.
+    $sourceExe = Join-Path $releaseBinDir "codexbar-desktop-tauri.exe"
+    if (Test-Path $sourceExe) {
+        Remove-Item -LiteralPath $sourceExe -Force
+    }
     $process = Start-Process -FilePath "cmd.exe" `
         -ArgumentList @("/d", "/s", "/c", $commandLine) `
         -NoNewWindow `
         -PassThru `
         -RedirectStandardOutput $tauriBuildLog `
         -RedirectStandardError $tauriBuildErrLog
+    # Opening the handle now keeps it alive after exit, so ExitCode is
+    # readable. Without it Start-Process -PassThru can report a null code.
+    $null = $process.Handle
     while (-not $process.HasExited) {
         Start-Sleep -Seconds 30
         Write-Host "Tauri build still running..."
@@ -335,10 +344,9 @@ try {
     }
     $process.WaitForExit()
     $process.Refresh()
-    $sourceExe = Join-Path $releaseBinDir "codexbar-desktop-tauri.exe"
     if ($null -eq $process.ExitCode) {
         if (Test-Path $sourceExe) {
-            Write-Host "Warning: Tauri build did not report an exit code, but produced $sourceExe."
+            Write-Host "Warning: Tauri build did not report an exit code, but freshly produced $sourceExe."
         } else {
             Write-Host "Tauri build did not report an exit code. Last 200 stdout lines:"
             if (Test-Path $tauriBuildLog) {
@@ -364,8 +372,8 @@ try {
         throw "pnpm tauri build exited with code $tauriExitCode"
     }
 
-    if (-not (Test-Path $sourceExe)) {
-        throw "Missing expected Tauri binary: $sourceExe"
+    if (-not $freshSourceExe) {
+        throw "Missing freshly built Tauri binary: $sourceExe"
     }
 
     Copy-Item $sourceExe $desktopExe -Force
